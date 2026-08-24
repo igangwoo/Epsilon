@@ -326,4 +326,12 @@ def bootstrap() -> Environment:
     _axiom(env, SORRY_AXIOM, close_pi([("p", PROP)], ph("p")),
            doc="Unfinished proof placeholder; marks results as Heuristic.")
 
+    # everything declared above belongs to the kernel core; inductives and
+    # their constructors/recursors are created by declare_inductive, which
+    # does not set a module, so tag them here (used by graph filtering and
+    # by the IDE to separate core from user/library declarations)
+    for name in env.order:
+        if env.decls[name].module is None:
+            env.decls[name].module = "core"
+
     return env

@@ -229,7 +229,8 @@ def _tac_exact(state: ProofState, tac: S.Tactic) -> None:
     state.close(goal, t)
 
 
-def _tac_apply(state: ProofState, tac: S.Tactic) -> None:
+def _tac_apply(state: ProofState, tac: S.Tactic, *, label: str = "apply",
+               rule: str = "apply") -> None:
     goal = state.current()
     t = state.elab_in(goal, tac.terms[0], None)
     ty = state.ctx.infer(t)
@@ -264,7 +265,7 @@ def _tac_apply(state: ProofState, tac: S.Tactic) -> None:
                               "(try supplying it explicitly)", tac.span)
         g = state._mk_goal(list(goal.locals), mty, mv.id)
         new_goals.append(g)
-    state._record(goal, "apply", new_goals, tac.span, rule="apply")
+    state._record(goal, label, new_goals, tac.span, rule=rule)
     state.ctx.assign(goal.mvar_id, t)
     state.replace_goal(goal, new_goals)
 
@@ -347,12 +348,13 @@ def _tac_symm(state: ProofState, tac: S.Tactic) -> None:
     state.goals.insert(0, g2)
 
 
-def _tac_constructor(state: ProofState, tac: S.Tactic) -> None:
+def _tac_constructor(state: ProofState, tac: S.Tactic,
+                     rule: str = "ctor") -> None:
     goal = state.current()
     tgt = whnf(state.env, goal.target)
     h, args = unfold_app(tgt)
     if not isinstance(h, Const) or h.name not in state.env.inductives:
-        raise TacticError("constructor: goal is not an inductive proposition",
+        raise TacticError(f"{tac.name}: goal is not an inductive proposition",
                           tac.span)
     info = state.env.inductives[h.name]
     last_err = None
@@ -360,32 +362,34 @@ def _tac_constructor(state: ProofState, tac: S.Tactic) -> None:
         snapshot = {mid: i.assignment for mid, i in state.ctx.mvars.items()}
         ngoals_before = list(state.goals)
         try:
-            _apply_const(state, goal, cname, tac)
+            _apply_const(state, goal, cname, tac, rule=rule)
             return
         except TacticError as e:
             last_err = e
             for mid, asg in snapshot.items():
                 state.ctx.mvars[mid].assignment = asg
             state.goals = ngoals_before
-    raise last_err or TacticError("constructor: no constructor applies", tac.span)
+    raise last_err or TacticError(f"{tac.name}: no constructor applies",
+                                  tac.span)
 
 
-def _apply_const(state: ProofState, goal: Goal, cname: str, tac: S.Tactic) -> None:
+def _apply_const(state: ProofState, goal: Goal, cname: str, tac: S.Tactic,
+                 rule: str = "ctor") -> None:
     fake = S.Tactic(name="apply", terms=[S.SIdent(name=cname, span=tac.span)],
                     span=tac.span)
-    _tac_apply(state, fake)
+    _tac_apply(state, fake, label=tac.name, rule=rule)
 
 
 def _tac_split(state: ProofState, tac: S.Tactic) -> None:
-    _tac_constructor(state, tac)
+    _tac_constructor(state, tac, rule="∧I/↔I")
 
 
 def _tac_left(state: ProofState, tac: S.Tactic) -> None:
-    _apply_const(state, state.current(), "Or.inl", tac)
+    _apply_const(state, state.current(), "Or.inl", tac, rule="∨I₁")
 
 
 def _tac_right(state: ProofState, tac: S.Tactic) -> None:
-    _apply_const(state, state.current(), "Or.inr", tac)
+    _apply_const(state, state.current(), "Or.inr", tac, rule="∨I₂")
 
 
 def _tac_exists(state: ProofState, tac: S.Tactic) -> None:
@@ -970,6 +974,25 @@ def _tac_sorry(state: ProofState, tac: S.Tactic) -> None:
     state.close(goal, App(Const(SORRY_AXIOM), goal.target))
 
 
+def _tac_auto(state: ProofState, tac: S.Tactic) -> None:
+    """Search for a proof of the current goal from lemmas and hypotheses.
+
+    The search is untrusted like every tactic: it only assembles tactic
+    steps, and whatever proof term results is still checked by the kernel.
+    """
+    from ..automation import _search  # local import: automation uses tactics
+    goal = state.current()
+    script: list[str] = []
+    budget = [tac.terms and 800 or 400]
+    n_before = len(state.goals)
+    if not _search(state, 6, budget, script) and len(state.goals) >= n_before:
+        raise TacticError(
+            f"auto: no proof found for ⊢ {pp(state.env, goal.target)}",
+            tac.span)
+    state._record(goal, f"auto ({'; '.join(script)})", [], tac.span,
+                  rule="search")
+
+
 def _tac_clear(state: ProofState, tac: S.Tactic) -> None:
     goal = state.current()
     keep = [ld for ld in goal.locals if ld.username not in tac.idents]
@@ -1010,4 +1033,5 @@ _HANDLERS = {
     "linarith": _tac_ring,
     "sorry": _tac_sorry,
     "clear": _tac_clear,
+    "auto": _tac_auto,
 }

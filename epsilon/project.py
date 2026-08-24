@@ -292,12 +292,15 @@ class Session:
                 dd = self.env.decls.get(dep)
                 if dd is None or LOCAL_MARK in dep:
                     continue
-                if dd.kind in (DeclKind.THEOREM, DeclKind.AXIOM,
-                               DeclKind.DEFINITION, DeclKind.INDUCTIVE):
-                    if dd.module == "core" and dd.kind != DeclKind.AXIOM:
-                        continue  # keep the graph readable
-                    edges.append((n, dep))
-                    stack.append(dep)
+                if dd.kind not in (DeclKind.THEOREM, DeclKind.AXIOM,
+                                   DeclKind.DEFINITION, DeclKind.INDUCTIVE):
+                    continue
+                # kernel-core plumbing (Nat, Eq, Nat.add, ...) would swamp
+                # the graph; keep core axioms, since those carry trust
+                if dd.module == "core" and dd.kind != DeclKind.AXIOM:
+                    continue
+                edges.append((n, dep))
+                stack.append(dep)
         edges = [e for e in edges if e[0] in nodes or e[0] in seen]
         return {"nodes": list(nodes.values()),
                 "edges": [{"from": a, "to": b} for a, b in edges
