@@ -32,6 +32,19 @@ TRUSTED_NUMERIC_AXIOM = "Epsilon.trustedNumeric"
 SORRY_AXIOM = "Epsilon.sorry"
 TRUST_AXIOMS = {TRUSTED_CAS_AXIOM, TRUSTED_NUMERIC_AXIOM, SORRY_AXIOM}
 
+# Verification statuses, worst first. A proof that touches several trust
+# axioms takes the *worst* of them - trust does not average out.
+STATUS_ORDER = ["heuristic", "numeric", "symbolic", "proven"]
+
+# Built-in trust axiom -> the status it caps a theorem at. Plugins extend
+# this per-environment through `Environment.register_trust_axiom`, so an
+# oracle a plugin adds can never make its results read as Formally Proven.
+BUILTIN_TRUST_STATUS = {
+    SORRY_AXIOM: "heuristic",
+    TRUSTED_NUMERIC_AXIOM: "numeric",
+    TRUSTED_CAS_AXIOM: "symbolic",
+}
+
 
 @dataclass
 class Declaration:
@@ -81,6 +94,31 @@ class Environment:
         self.ctor_of: dict[str, str] = {}       # constructor -> inductive
         self.recursor_of: dict[str, str] = {}   # recursor -> inductive
         self._axiom_cache: dict[str, frozenset[str]] = {}
+        # axiom name -> worst status it forces on dependent theorems
+        self.trust_status: dict[str, str] = dict(BUILTIN_TRUST_STATUS)
+
+    def register_trust_axiom(self, name: str, status: str = "symbolic") -> None:
+        """Mark an axiom as an *oracle* axiom, so theorems that depend on it
+        are reported at `status` rather than Formally Proven.
+
+        Every decision procedure Epsilon's kernel does not itself verify -
+        built-in or from a plugin - must go through here. It is what keeps
+        `✓ Formally Proven` meaning exactly one thing.
+        """
+        if status not in STATUS_ORDER:
+            raise KernelError(
+                f"unknown verification status {status!r}; "
+                f"expected one of {STATUS_ORDER}")
+        if status == "proven":
+            raise KernelError(
+                "a trust axiom cannot claim 'proven': that is the status "
+                "reserved for kernel-checked proofs")
+        self.trust_status[name] = status
+        self._axiom_cache.clear()
+
+    @property
+    def trust_axioms(self) -> frozenset[str]:
+        return frozenset(self.trust_status)
 
     # ------------------------------------------------------------------
     def contains(self, name: str) -> bool:
@@ -152,18 +190,19 @@ class Environment:
         - "proven"    : kernel-checked, no trust axioms (Formally Proven;
                         ordinary mathematical axioms like choice are listed
                         separately, as in Lean's #print axioms)
-        - "symbolic"  : proof relies on the CAS trust axiom
-        - "numeric"   : proof relies on the numeric trust axiom
+        - "symbolic"  : proof relies on a symbolic decision procedure
+        - "numeric"   : proof relies on numerical evidence
         - "heuristic" : proof contains sorry / unfinished parts
+
+        When several trust axioms are involved the worst one wins.
         """
-        axs = self.axioms_of(name)
-        if SORRY_AXIOM in axs:
-            return "heuristic"
-        if TRUSTED_NUMERIC_AXIOM in axs:
-            return "numeric"
-        if TRUSTED_CAS_AXIOM in axs:
-            return "symbolic"
-        return "proven"
+        worst = "proven"
+        for ax in self.axioms_of(name):
+            status = self.trust_status.get(ax)
+            if status is not None and STATUS_ORDER.index(status) < \
+                    STATUS_ORDER.index(worst):
+                worst = status
+        return worst
 
     # ------------------------------------------------------------------
     def theorems(self) -> list[Declaration]:

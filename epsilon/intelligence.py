@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import Optional
 
-from .kernel.env import DeclKind, TRUST_AXIOMS
+from .kernel.env import DeclKind
 from .elab.context import LOCAL_MARK
 from .elab.pp import pp
 from .project import Session, STATUS_LABELS
@@ -130,7 +130,7 @@ def hover(session: Session, name: str) -> Optional[dict]:
     status = (session.env.verification_status(resolved)
               if d.kind == DeclKind.THEOREM else None)
     axioms = sorted(a for a in session.env.axioms_of(resolved)
-                    if a not in TRUST_AXIOMS)
+                    if a not in session.env.trust_axioms)
     return {
         "name": resolved,
         "kind": d.kind.value,

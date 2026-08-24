@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
-from .kernel.env import DeclKind, Environment, TRUST_AXIOMS
+from .kernel.env import DeclKind, Environment
 
 
 class ResourceLimitExceeded(Exception):
@@ -188,7 +188,7 @@ def audit_axioms(session, modules: Optional[list[str]] = None) -> AxiomAudit:
         d = env.decls[name]
         if d.kind != DeclKind.AXIOM:
             continue
-        if name in TRUST_AXIOMS or d.module == "core":
+        if name in env.trust_axioms or d.module == "core":
             continue
         if modules is not None and d.module not in modules:
             continue
@@ -205,7 +205,7 @@ def audit_axioms(session, modules: Optional[list[str]] = None) -> AxiomAudit:
                              "status_label": t["status_label"],
                              "module": t["module"]})
             for a in env.axioms_of(t["name"]):
-                if a in TRUST_AXIOMS:
+                if a in env.trust_axioms:
                     trust_used.add(a)
 
     return AxiomAudit(axioms=axioms, trust_axioms_used=sorted(trust_used),

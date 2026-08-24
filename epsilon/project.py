@@ -14,7 +14,7 @@ from typing import Callable, Optional
 
 from . import LANGUAGE_VERSION, __version__
 from .kernel.bootstrap import bootstrap
-from .kernel.env import Environment, DeclKind, KernelError, TRUST_AXIOMS
+from .kernel.env import Environment, DeclKind, KernelError
 from .kernel.term import Term, App, Const
 from .syntax import sast as S
 from .syntax.lexer import LexError
@@ -226,7 +226,7 @@ class Session:
                 continue
             status = self.env.verification_status(name)
             axioms = sorted(a for a in self.env.axioms_of(name)
-                            if a not in TRUST_AXIOMS)
+                            if a not in self.env.trust_axioms)
             from .elab.pp import pp
             out.append({
                 "name": name,

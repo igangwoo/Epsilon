@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Optional
 
-from .kernel.env import DeclKind, Environment, TRUST_AXIOMS
+from .kernel.env import DeclKind, Environment
 from .elab.context import LOCAL_MARK
 from .elab.pp import pp
 from .project import Session, STATUS_LABELS
@@ -171,7 +171,7 @@ def _visible_decls(session: Session,
             "value_hash": d.hash(),
             "status": status,
             "axioms": sorted(a for a in env.axioms_of(name)
-                             if a not in TRUST_AXIOMS),
+                             if a not in env.trust_axioms),
             "type_repr": repr(d.type),
         }
     return out
