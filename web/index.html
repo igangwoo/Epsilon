@@ -113,7 +113,17 @@
       </div>
       <div class="side-panel hidden" data-panel="graph">
         <div class="side-head">Dependency graph</div>
-        <div class="graph-hint">Nodes are colored by verification status. Drag to pan, scroll to zoom, click to highlight.</div>
+        <input class="search-input" id="graphSearch" placeholder="focus a result…" />
+        <div class="graph-filters">
+          <label><input type="checkbox" id="gfTheorem" checked /> Theorems</label>
+          <label><input type="checkbox" id="gfAxiom" checked /> Axioms</label>
+          <label><input type="checkbox" id="gfDefinition" /> Definitions</label>
+          <label><input type="checkbox" id="gfIsolated" /> Unconnected</label>
+        </div>
+        <div class="graph-legend" id="graphLegend"></div>
+        <div class="graph-hint">Drag the background to pan, scroll to zoom,
+          drag a node to pull it out, click to inspect. Definitions are hidden
+          by default because type aliases link to nearly everything.</div>
       </div>
       <div class="side-panel hidden" data-panel="search">
         <div class="side-head">Search</div>
@@ -121,6 +131,10 @@
         <ul class="search-results" id="searchResults"></ul>
       </div>
     </aside>
+
+    <div class="resizer resizer-v" data-resize="side" tabindex="0"
+         role="separator" aria-orientation="vertical"
+         title="Drag to resize · double-click to reset"></div>
 
     <main class="editor-area">
       <div class="tabstrip glass" id="tabstrip"></div>
@@ -130,10 +144,20 @@
           <pre class="highlight" id="highlight" aria-hidden="true"><code id="highlightCode"></code></pre>
           <textarea class="code-input" id="editor" spellcheck="false"
             autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+          <div class="caret hidden" id="caret" aria-hidden="true"></div>
+        </div>
+        <div class="autocomplete hidden" id="autocomplete" role="listbox"></div>
+        <div class="graph-tools hidden" id="graphTools">
+          <button class="mini-btn" id="graphFit" title="Fit graph to view">⤢</button>
+          <button class="mini-btn" id="graphReset" title="Reset graph layout">⟳</button>
         </div>
         <canvas class="graph-canvas hidden" id="graphCanvas"></canvas>
       </div>
     </main>
+
+    <div class="resizer resizer-v" data-resize="util" tabindex="0"
+         role="separator" aria-orientation="vertical"
+         title="Drag to resize · double-click to reset"></div>
 
     <aside class="utility glass" id="utility">
       <div class="util-tabs">
@@ -149,10 +173,17 @@
           <div class="empty-hint">Plots from the last check appear here.</div>
         </div>
         <div class="util-panel hidden" data-util="inspector" id="inspectorPanel">
-          <div class="empty-hint">#check / #eval results appear here.</div>
+          <div id="inspectorSymbol"></div>
+          <div id="inspectorResults">
+            <div class="empty-hint">#check / #eval results appear here.</div>
+          </div>
         </div>
       </div>
     </aside>
+
+    <div class="resizer resizer-h" data-resize="bottom" tabindex="0"
+         role="separator" aria-orientation="horizontal"
+         title="Drag to resize · double-click to reset"></div>
 
     <section class="bottom glass" id="bottom">
       <div class="bottom-tabs">
@@ -167,7 +198,10 @@
           <div class="console-log" id="consoleLog"></div>
           <div class="console-input-row">
             <span class="console-prompt">ε&gt;</span>
-            <input class="console-input" id="consoleInput" placeholder="evaluate an expression…" />
+            <textarea class="console-input" id="consoleInput" rows="1"
+              spellcheck="false" autocomplete="off"
+              placeholder="evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete"></textarea>
+            <button class="mini-btn" id="consoleClear" title="Clear console">⌫</button>
           </div>
         </div>
         <div class="bottom-panel hidden" data-bottom="output" id="outputPanel"></div>
@@ -193,6 +227,8 @@
       <ul class="palette-list" id="paletteList"></ul>
     </div>
   </div>
+
+  <div class="hover-tip hidden" id="hoverTip"></div>
 
   <div class="toast-stack" id="toastStack"></div>
 

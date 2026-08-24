@@ -660,7 +660,7 @@
 
   /* ---- inspector ---- */
   function renderInspector(results) {
-    const panel = $("#inspectorPanel");
+    const panel = $("#inspectorResults");
     panel.innerHTML = "";
     const rel = results.filter((r) => r.kind === "check" || r.kind === "eval");
     const meta = el("div", "inspector-item");
@@ -680,114 +680,418 @@
   }
 
   /* ===================================================================
-   * Dependency graph (force-directed)
+   * Dependency graph
+   *
+   * A continuously relaxing force simulation, the way a note-graph view
+   * behaves: repulsion pushes the whole set apart, springs hold linked
+   * results together, and the layout keeps settling for as long as it is
+   * moving instead of freezing after a fixed number of passes. Labels are
+   * drawn only where they can be read - the focused node's neighbourhood,
+   * or everything once you have zoomed in - so the picture never becomes
+   * a wall of overlapping text.
    * =================================================================== */
   const graphCanvas = $("#graphCanvas");
   let graphData = { nodes: [], edges: [] };
-  let graphView = { x: 0, y: 0, scale: 1, dragging: false, node: null };
+  const graphView = { x: 0, y: 0, scale: 1 };
+  const graphSim = {
+    running: false, frame: null, alpha: 0,
+    hover: null, selected: null, drag: null,
+    panning: false, px: 0, py: 0, moved: false,
+    adjacency: new Map(),
+  };
+
+  const GRAPH_KIND_COLOR = {
+    axiom: "--heur", definition: "--accent-2", inductive: "--sym",
+  };
+
+  function graphColor(n, css) {
+    const statusVar = { proven: "--ok", symbolic: "--sym",
+                        numeric: "--num", heuristic: "--heur" }[n.status];
+    const v = statusVar || GRAPH_KIND_COLOR[n.kind] || "--fg-dim";
+    return css.getPropertyValue(v).trim() || "#888";
+  }
+
+  let graphRaw = { nodes: [], edges: [] };
+  const graphFilters = { theorem: true, axiom: true, definition: false,
+                         isolated: false };
 
   function renderDeps(deps) {
-    graphData = deps;
-    if (!$('.act[data-view="graph"]').classList.contains("active")) return;
-    layoutGraph();
+    graphRaw = { nodes: deps.nodes || [], edges: deps.edges || [] };
+    applyGraphFilters();
+  }
+
+  /** Derive the drawn graph from the raw one. Type aliases such as ℝ are
+   *  definitions that nearly every axiom mentions, so including them turns
+   *  the picture into a star around one hub; they are off by default. */
+  function applyGraphFilters() {
+    const keepKind = (n) => {
+      if (n.kind === "theorem") return graphFilters.theorem;
+      if (n.kind === "axiom") return graphFilters.axiom;
+      return graphFilters.definition;
+    };
+    const kept = new Set(graphRaw.nodes.filter(keepKind).map((n) => n.name));
+    const edges = graphRaw.edges.filter(
+      (e) => kept.has(e.from) && kept.has(e.to));
+    const linked = new Set();
+    edges.forEach((e) => { linked.add(e.from); linked.add(e.to); });
+    const nodes = graphRaw.nodes.filter(
+      (n) => kept.has(n.name) &&
+             (graphFilters.isolated || linked.has(n.name)));
+    const visible = new Set(nodes.map((n) => n.name));
+
+    const prev = new Map(graphData.nodes.map((n) => [n.name, n]));
+    graphData = { nodes: nodes.map((n) => ({ ...n })),
+                  edges: edges.filter((e) => visible.has(e.from) &&
+                                             visible.has(e.to)) };
+    renderGraphLegend();
+    const R = 260;
+    graphData.nodes.forEach((n, i) => {
+      const old = prev.get(n.name);
+      if (old) { n.x = old.x; n.y = old.y; n.vx = 0; n.vy = 0; return; }
+      // seed on a ring: a circle spreads better than a point cloud
+      const a = (i / Math.max(1, graphData.nodes.length)) * Math.PI * 2;
+      n.x = Math.cos(a) * R + (i % 7) * 3;
+      n.y = Math.sin(a) * R + (i % 5) * 3;
+      n.vx = 0; n.vy = 0;
+    });
+    buildAdjacency();
+    graphSim.alpha = 1;
+    if ($('.act[data-view="graph"]').classList.contains("active")) startGraph();
+  }
+
+
+  function renderGraphLegend() {
+    const box = $("#graphLegend");
+    if (!box) return;
+    const css = getComputedStyle(document.documentElement);
+    const rows = [
+      ["--ok", "proven"], ["--sym", "symbolic"], ["--num", "numeric"],
+      ["--heur", "axiom / heuristic"], ["--accent-2", "definition"],
+    ];
+    box.innerHTML = "";
+    rows.forEach(([v, label]) => {
+      const s = el("span");
+      const dot = el("i");
+      dot.style.background = css.getPropertyValue(v).trim();
+      s.appendChild(dot);
+      s.appendChild(document.createTextNode(label));
+      box.appendChild(s);
+    });
+    const s = el("span", null, `${graphData.nodes.length} shown`);
+    box.appendChild(s);
+  }
+
+  function focusGraphNode(query) {
+    const q = query.trim().toLowerCase();
+    if (!q) { graphSim.selected = null; drawGraph(); return; }
+    const hit = graphData.nodes.find(
+      (n) => n.name.toLowerCase().includes(q) ||
+             (n.title || "").toLowerCase().includes(q));
+    if (!hit) return;
+    graphSim.selected = hit.name;
+    // centre the view on it without changing the zoom
+    graphView.x = -hit.x * graphView.scale;
+    graphView.y = -hit.y * graphView.scale;
     drawGraph();
   }
 
-  function layoutGraph() {
-    const nodes = graphData.nodes;
-    if (!nodes.length) return;
-    const idx = {};
-    nodes.forEach((n, i) => {
-      idx[n.name] = n;
-      if (n._x === undefined) {
-        n._x = Math.cos(i) * 120 + 300;
-        n._y = Math.sin(i * 1.7) * 120 + 220;
-      }
+  function wireGraphFilters() {
+    const map = { gfTheorem: "theorem", gfAxiom: "axiom",
+                  gfDefinition: "definition", gfIsolated: "isolated" };
+    Object.entries(map).forEach(([id, key]) => {
+      const box = $("#" + id);
+      if (!box) return;
+      box.checked = graphFilters[key];
+      box.onchange = () => {
+        graphFilters[key] = box.checked;
+        applyGraphFilters();
+        graphSim.alpha = 1;
+        startGraph();
+        setTimeout(fitGraphView, 700);
+      };
     });
-    const edges = graphData.edges
-      .map((e) => [idx[e.from], idx[e.to]])
-      .filter(([a, b]) => a && b);
-    for (let iter = 0; iter < 80; iter++) {
-      for (let i = 0; i < nodes.length; i++) {
-        let fx = 0, fy = 0;
-        for (let j = 0; j < nodes.length; j++) {
-          if (i === j) continue;
-          const dx = nodes[i]._x - nodes[j]._x, dy = nodes[i]._y - nodes[j]._y;
-          const d2 = dx * dx + dy * dy + 0.1;
-          const f = 2400 / d2;
-          fx += (dx / Math.sqrt(d2)) * f;
-          fy += (dy / Math.sqrt(d2)) * f;
-        }
-        nodes[i]._fx = fx; nodes[i]._fy = fy;
-      }
-      edges.forEach(([a, b]) => {
-        const dx = b._x - a._x, dy = b._y - a._y;
-        const d = Math.sqrt(dx * dx + dy * dy) + 0.1;
-        const f = (d - 90) * 0.02;
-        a._fx += (dx / d) * f; a._fy += (dy / d) * f;
-        b._fx -= (dx / d) * f; b._fy -= (dy / d) * f;
-      });
-      nodes.forEach((n) => {
-        n._x += Math.max(-10, Math.min(10, n._fx * 0.1));
-        n._y += Math.max(-10, Math.min(10, n._fy * 0.1));
+    const search = $("#graphSearch");
+    if (search) {
+      let t = null;
+      search.addEventListener("input", () => {
+        clearTimeout(t);
+        t = setTimeout(() => focusGraphNode(search.value), 180);
       });
     }
+  }
+
+  function buildAdjacency() {
+    const byName = new Map(graphData.nodes.map((n) => [n.name, n]));
+    const adj = new Map(graphData.nodes.map((n) => [n.name, new Set()]));
+    graphData.links = [];
+    graphData.edges.forEach((e) => {
+      const a = byName.get(e.from), b = byName.get(e.to);
+      if (!a || !b || a === b) return;
+      graphData.links.push({ a, b });
+      adj.get(e.from).add(e.to);
+      adj.get(e.to).add(e.from);
+    });
+    graphSim.adjacency = adj;
+    graphData.nodes.forEach((n) => {
+      n.degree = (adj.get(n.name) || new Set()).size;
+      n.r = 4 + Math.min(7, Math.sqrt(n.degree) * 2.1);
+    });
+    graphData.byName = byName;
+  }
+
+  function startGraph() {
+    if (graphSim.running) return;
+    graphSim.running = true;
+    const step = () => {
+      if (!graphSim.running) return;
+      if (graphSim.alpha > 0.005) { tickGraph(); graphSim.alpha *= 0.985; }
+      drawGraph();
+      graphSim.frame = requestAnimationFrame(step);
+    };
+    step();
+  }
+
+  function stopGraph() {
+    graphSim.running = false;
+    if (graphSim.frame) cancelAnimationFrame(graphSim.frame);
+    graphSim.frame = null;
+  }
+
+  function tickGraph() {
+    const nodes = graphData.nodes;
+    const n = nodes.length;
+    if (!n) return;
+    const k = graphSim.alpha;
+
+    // repulsion — the term that does the spreading
+    for (let i = 0; i < n; i++) {
+      const a = nodes[i];
+      for (let j = i + 1; j < n; j++) {
+        const b = nodes[j];
+        let dx = b.x - a.x, dy = b.y - a.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 1e-4) { dx = (i % 3) - 1 || 0.7; dy = (j % 3) - 1 || 0.7; d2 = 1; }
+        const dist = Math.sqrt(d2);
+        // strong close-range push, decaying with distance
+        const f = Math.min(4000 / d2, 90) * k;
+        const ux = dx / dist, uy = dy / dist;
+        a.vx -= ux * f; a.vy -= uy * f;
+        b.vx += ux * f; b.vy += uy * f;
+      }
+    }
+
+    // springs on dependency edges
+    const REST = 78;
+    graphData.links.forEach(({ a, b }) => {
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const f = (dist - REST) * 0.035 * k;
+      const ux = dx / dist, uy = dy / dist;
+      a.vx += ux * f; a.vy += uy * f;
+      b.vx -= ux * f; b.vy -= uy * f;
+    });
+
+    // gentle pull to the origin so disconnected parts do not drift away
+    nodes.forEach((nd) => {
+      nd.vx -= nd.x * 0.0016 * k;
+      nd.vy -= nd.y * 0.0016 * k;
+    });
+
+    // integrate with damping; a dragged node is pinned to the pointer
+    nodes.forEach((nd) => {
+      if (graphSim.drag && graphSim.drag.node === nd) { nd.vx = nd.vy = 0; return; }
+      nd.vx *= 0.82; nd.vy *= 0.82;
+      const sp = Math.hypot(nd.vx, nd.vy);
+      if (sp > 12) { nd.vx = (nd.vx / sp) * 12; nd.vy = (nd.vy / sp) * 12; }
+      nd.x += nd.vx; nd.y += nd.vy;
+    });
+  }
+
+  function graphFocus() {
+    return graphSim.hover || graphSim.selected;
+  }
+
+  function isNear(name) {
+    const f = graphFocus();
+    if (!f) return true;
+    if (name === f) return true;
+    const nb = graphSim.adjacency.get(f);
+    return nb ? nb.has(name) : false;
   }
 
   function drawGraph() {
     const dpr = window.devicePixelRatio || 1;
     const W = graphCanvas.clientWidth, H = graphCanvas.clientHeight;
-    graphCanvas.width = W * dpr; graphCanvas.height = H * dpr;
+    if (!W || !H) return;
+    if (graphCanvas.width !== Math.round(W * dpr)) {
+      graphCanvas.width = Math.round(W * dpr);
+      graphCanvas.height = Math.round(H * dpr);
+    }
     const ctx = graphCanvas.getContext("2d");
-    ctx.setTransform(dpr * graphView.scale, 0, 0, dpr * graphView.scale,
-      graphView.x * dpr, graphView.y * dpr);
-    ctx.clearRect(-5000, -5000, 10000, 10000);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    ctx.translate(W / 2 + graphView.x, H / 2 + graphView.y);
+    ctx.scale(graphView.scale, graphView.scale);
+
     const css = getComputedStyle(document.documentElement);
     const line = css.getPropertyValue("--glass-border").trim();
-    const fg = css.getPropertyValue("--fg-dim").trim();
-    const statusColor = {
-      proven: css.getPropertyValue("--ok").trim(),
-      symbolic: css.getPropertyValue("--sym").trim(),
-      numeric: css.getPropertyValue("--num").trim(),
-      heuristic: css.getPropertyValue("--heur").trim(),
-    };
-    const idx = {};
-    graphData.nodes.forEach((n) => (idx[n.name] = n));
-    ctx.strokeStyle = line; ctx.lineWidth = 1;
-    graphData.edges.forEach((e) => {
-      const a = idx[e.from], b = idx[e.to];
-      if (!a || !b) return;
-      ctx.beginPath(); ctx.moveTo(a._x, a._y); ctx.lineTo(b._x, b._y); ctx.stroke();
+    const fg = css.getPropertyValue("--fg").trim();
+    const dim = css.getPropertyValue("--fg-faint").trim();
+    const accent = css.getPropertyValue("--accent").trim();
+    const focus = graphFocus();
+
+    // edges
+    ctx.lineWidth = 1 / graphView.scale;
+    graphData.links.forEach(({ a, b }) => {
+      const lit = focus && (a.name === focus || b.name === focus);
+      ctx.strokeStyle = lit ? accent : line;
+      ctx.globalAlpha = focus ? (lit ? 0.95 : 0.12) : 0.5;
+      ctx.lineWidth = (lit ? 1.8 : 1) / graphView.scale;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
     });
-    ctx.font = "10px ui-monospace";
-    graphData.nodes.forEach((n) => {
-      ctx.beginPath(); ctx.arc(n._x, n._y, 6, 0, 7);
-      ctx.fillStyle = n.kind === "axiom" ? "#ff9ec4" :
-        (statusColor[n.status] || fg);
+    ctx.globalAlpha = 1;
+
+    // nodes
+    const labelAll = graphView.scale > 1.35;
+    ctx.font = `${11 / graphView.scale}px ui-monospace, monospace`;
+    ctx.textBaseline = "middle";
+    graphData.nodes.forEach((nd) => {
+      const near = isNear(nd.name);
+      ctx.globalAlpha = near ? 1 : 0.18;
+      ctx.beginPath();
+      ctx.arc(nd.x, nd.y, nd.r, 0, 7);
+      ctx.fillStyle = graphColor(nd, css);
       ctx.fill();
-      ctx.fillStyle = fg;
-      ctx.fillText(n.name.split(".").pop(), n._x + 9, n._y + 3);
+      if (nd.name === graphSim.selected) {
+        ctx.strokeStyle = fg;
+        ctx.lineWidth = 2 / graphView.scale;
+        ctx.stroke();
+      }
+      const showLabel = labelAll || (focus && near) || nd.degree >= 6;
+      if (showLabel) {
+        ctx.fillStyle = nd.name === focus ? fg : dim;
+        ctx.fillText(nd.title || nd.name.split(".").pop(),
+                     nd.x + nd.r + 4 / graphView.scale, nd.y);
+      }
+      ctx.globalAlpha = 1;
     });
   }
 
-  graphCanvas.addEventListener("mousedown", (e) => {
-    graphView.dragging = true;
-    graphView._px = e.clientX; graphView._py = e.clientY;
+  /* -------- interaction -------- */
+  function graphPointAt(ev) {
+    const rect = graphCanvas.getBoundingClientRect();
+    const x = (ev.clientX - rect.left - rect.width / 2 - graphView.x) / graphView.scale;
+    const y = (ev.clientY - rect.top - rect.height / 2 - graphView.y) / graphView.scale;
+    return { x, y };
+  }
+
+  function graphNodeAt(ev) {
+    const { x, y } = graphPointAt(ev);
+    let best = null, bestD = Infinity;
+    graphData.nodes.forEach((n) => {
+      const d = Math.hypot(n.x - x, n.y - y);
+      if (d < Math.max(n.r + 6, 10) && d < bestD) { best = n; bestD = d; }
+    });
+    return best;
+  }
+
+  graphCanvas.addEventListener("mousedown", (ev) => {
+    const node = graphNodeAt(ev);
+    graphSim.moved = false;
+    if (node) {
+      graphSim.drag = { node, ...graphPointAt(ev) };
+    } else {
+      graphSim.panning = true;
+      graphSim.px = ev.clientX; graphSim.py = ev.clientY;
+    }
   });
-  window.addEventListener("mousemove", (e) => {
-    if (!graphView.dragging) return;
-    graphView.x += e.clientX - graphView._px;
-    graphView.y += e.clientY - graphView._py;
-    graphView._px = e.clientX; graphView._py = e.clientY;
+
+  graphCanvas.addEventListener("mousemove", (ev) => {
+    if (graphSim.drag) {
+      const p = graphPointAt(ev);
+      graphSim.drag.node.x = p.x;
+      graphSim.drag.node.y = p.y;
+      graphSim.alpha = Math.max(graphSim.alpha, 0.35);
+      graphSim.moved = true;
+      startGraph();
+      return;
+    }
+    if (graphSim.panning) {
+      graphView.x += ev.clientX - graphSim.px;
+      graphView.y += ev.clientY - graphSim.py;
+      graphSim.px = ev.clientX; graphSim.py = ev.clientY;
+      graphSim.moved = true;
+      drawGraph();
+      return;
+    }
+    const node = graphNodeAt(ev);
+    const name = node ? node.name : null;
+    if (name !== graphSim.hover) {
+      graphSim.hover = name;
+      graphCanvas.style.cursor = name ? "pointer" : "grab";
+      drawGraph();
+    }
+  });
+
+  window.addEventListener("mouseup", (ev) => {
+    if (graphSim.drag && !graphSim.moved) selectGraphNode(graphSim.drag.node);
+    else if (graphSim.panning && !graphSim.moved) {
+      graphSim.selected = null;
+      drawGraph();
+    }
+    graphSim.drag = null;
+    graphSim.panning = false;
+  });
+
+  graphCanvas.addEventListener("mouseleave", () => {
+    if (graphSim.hover) { graphSim.hover = null; drawGraph(); }
+  });
+
+  graphCanvas.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    const rect = graphCanvas.getBoundingClientRect();
+    const mx = ev.clientX - rect.left - rect.width / 2;
+    const my = ev.clientY - rect.top - rect.height / 2;
+    const before = graphView.scale;
+    const next = Math.max(0.15, Math.min(6, before * (ev.deltaY < 0 ? 1.12 : 0.89)));
+    // keep the point under the pointer fixed while zooming
+    graphView.x = mx - ((mx - graphView.x) / before) * next;
+    graphView.y = my - ((my - graphView.y) / before) * next;
+    graphView.scale = next;
     drawGraph();
-  });
-  window.addEventListener("mouseup", () => (graphView.dragging = false));
-  graphCanvas.addEventListener("wheel", (e) => {
-    e.preventDefault();
-    graphView.scale *= e.deltaY < 0 ? 1.1 : 0.9;
-    graphView.scale = Math.max(0.2, Math.min(4, graphView.scale));
+  }, { passive: false });
+
+  graphCanvas.addEventListener("dblclick", () => resetGraphView());
+
+  function selectGraphNode(node) {
+    graphSim.selected = node.name;
     drawGraph();
-  });
+    showSymbolInInspector(node.name);
+  }
+
+  function resetGraphView() {
+    graphView.x = 0; graphView.y = 0; graphView.scale = 1;
+    graphSim.alpha = 1;
+    startGraph();
+  }
+
+  function fitGraphView() {
+    if (!graphData.nodes.length) return;
+    const xs = graphData.nodes.map((n) => n.x), ys = graphData.nodes.map((n) => n.y);
+    const w = Math.max(...xs) - Math.min(...xs) || 1;
+    const h = Math.max(...ys) - Math.min(...ys) || 1;
+    const cx = (Math.max(...xs) + Math.min(...xs)) / 2;
+    const cy = (Math.max(...ys) + Math.min(...ys)) / 2;
+    const s = Math.min(graphCanvas.clientWidth / (w + 120),
+                       graphCanvas.clientHeight / (h + 120), 2);
+    graphView.scale = Math.max(0.15, s);
+    graphView.x = -cx * graphView.scale;
+    graphView.y = -cy * graphView.scale;
+    drawGraph();
+  }
 
   /* ===================================================================
    * Views, panels, palette
@@ -801,7 +1105,15 @@
     $(".editor-wrap .code-scroll").classList.toggle("hidden", showGraph);
     $("#gutter").classList.toggle("hidden", showGraph);
     document.getElementById("app").classList.remove("sidebar-collapsed");
-    if (showGraph) { layoutGraph(); drawGraph(); }
+    $("#graphTools").classList.toggle("hidden", !showGraph);
+    if (showGraph) {
+      graphSim.alpha = Math.max(graphSim.alpha, 0.9);
+      startGraph();
+      // let the simulation open up before framing it
+      setTimeout(fitGraphView, 900);
+    } else {
+      stopGraph();
+    }
   }
 
   function switchUtil(util) {
@@ -896,32 +1208,6 @@
   /* ===================================================================
    * Console (REPL)
    * =================================================================== */
-  const consoleHistory = [];
-  let histIdx = -1;
-  $("#consoleInput").addEventListener("keydown", async (e) => {
-    if (e.key === "Enter") {
-      const code = e.target.value.trim();
-      if (!code) return;
-      consoleHistory.push(code);
-      histIdx = consoleHistory.length;
-      e.target.value = "";
-      appendConsole(code, "in");
-      const r = await api("POST", "/api/eval", { code });
-      if (r.output) appendConsole(r.output, r.ok ? "" : "err");
-      (r.diagnostics || []).forEach((d) => appendConsole(d, "err"));
-    } else if (e.key === "ArrowUp") {
-      histIdx = Math.max(0, histIdx - 1);
-      if (consoleHistory[histIdx]) e.target.value = consoleHistory[histIdx];
-    } else if (e.key === "ArrowDown") {
-      histIdx = Math.min(consoleHistory.length, histIdx + 1);
-      e.target.value = consoleHistory[histIdx] || "";
-    }
-  });
-  function appendConsole(text, cls) {
-    const log = $("#consoleLog");
-    log.appendChild(el("div", "console-line " + (cls || ""), text));
-    log.scrollTop = log.scrollHeight;
-  }
 
   /* ===================================================================
    * search
@@ -966,6 +1252,603 @@
   }
 
   /* ===================================================================
+   * Text geometry
+   *
+   * The editor is a textarea sitting under a highlight layer, both in the
+   * same monospace face, so a caret or popup can be placed from (line,
+   * column) once the cell size is measured. The measurement is redone
+   * whenever the font may have changed rather than hard-coded.
+   * =================================================================== */
+  const metrics = { cw: 7.8, lh: 20, padL: 16, padT: 14 };
+
+  function measureText() {
+    const probe = el("span", null, "0".repeat(40));
+    const cs = getComputedStyle(editor);
+    probe.style.cssText =
+      `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
+    document.body.appendChild(probe);
+    const w = probe.getBoundingClientRect().width / 40;
+    probe.remove();
+    if (w > 0) metrics.cw = w;
+    metrics.lh = parseFloat(cs.lineHeight) || 20;
+    metrics.padL = parseFloat(cs.paddingLeft) || 16;
+    metrics.padT = parseFloat(cs.paddingTop) || 14;
+  }
+
+  function posToLineCol(pos) {
+    const before = editor.value.slice(0, pos);
+    const line = before.split("\n").length - 1;
+    const col = pos - (before.lastIndexOf("\n") + 1);
+    return { line, col };
+  }
+
+  /** Pixel position of a document offset, relative to the editor's box. */
+  function caretXY(pos) {
+    const { line, col } = posToLineCol(pos);
+    return {
+      x: metrics.padL + col * metrics.cw,
+      y: metrics.padT + line * metrics.lh,
+      line, col,
+    };
+  }
+
+  /* ===================================================================
+   * Animated caret
+   *
+   * The native caret cannot be styled, so it is hidden and drawn here.
+   * It eases in and out rather than hard-blinking, and holds solid while
+   * you are actually typing - a blink under the fingers is just noise.
+   * =================================================================== */
+  const caretEl = $("#caret");
+
+  function updateCaret() {
+    if (document.activeElement !== editor) {
+      caretEl.classList.add("hidden");
+      return;
+    }
+    // a selection has its own highlight; a caret on top would be confusing
+    if (editor.selectionStart !== editor.selectionEnd) {
+      caretEl.classList.add("hidden");
+      return;
+    }
+    const p = caretXY(editor.selectionStart);
+    caretEl.classList.remove("hidden");
+    caretEl.style.transform = `translate(${p.x}px, ${p.y}px)`;
+    caretEl.style.height = metrics.lh + "px";
+    // restart the animation so the caret is solid at the moment of typing
+    caretEl.classList.remove("blinking");
+    void caretEl.offsetWidth;
+    caretEl.classList.add("blinking");
+  }
+
+  /* ===================================================================
+   * Word under a position
+   * =================================================================== */
+  const IDENT_RE = /[A-Za-z0-9_'.ℕℤℚℝℂπ]/;
+
+  function wordAt(pos) {
+    const v = editor.value;
+    if (!v) return null;
+    let s = pos, e = pos;
+    while (s > 0 && IDENT_RE.test(v[s - 1])) s--;
+    while (e < v.length && IDENT_RE.test(v[e])) e++;
+    if (s === e) return null;
+    let word = v.slice(s, e).replace(/^\.+|\.+$/g, "");
+    if (!word || /^[0-9.]+$/.test(word)) return null;
+    return { word, start: s, end: e };
+  }
+
+  /** Document offset for a mouse event over the editor. */
+  function offsetAtPoint(clientX, clientY) {
+    const rect = editor.getBoundingClientRect();
+    const x = clientX - rect.left + editor.scrollLeft - metrics.padL;
+    const y = clientY - rect.top + editor.scrollTop - metrics.padT;
+    const line = Math.floor(y / metrics.lh);
+    const col = Math.round(x / metrics.cw);
+    const lines = editor.value.split("\n");
+    if (line < 0 || line >= lines.length) return null;
+    let off = 0;
+    for (let i = 0; i < line; i++) off += lines[i].length + 1;
+    return off + Math.max(0, Math.min(lines[line].length, col));
+  }
+
+  /* ===================================================================
+   * Autocomplete
+   * =================================================================== */
+  const acEl = $("#autocomplete");
+  const ac = { open: false, items: [], sel: 0, from: 0, token: 0 };
+  const acCache = new Map();
+
+  function currentPrefix() {
+    const pos = editor.selectionStart;
+    const v = editor.value;
+    let s = pos;
+    while (s > 0 && IDENT_RE.test(v[s - 1])) s--;
+    return { text: v.slice(s, pos), start: s };
+  }
+
+  async function fetchCompletions(prefix) {
+    if (acCache.has(prefix)) return acCache.get(prefix);
+    const r = await api("GET", "/api/completions?prefix=" +
+                        encodeURIComponent(prefix));
+    const items = (r.items || []).slice(0, 60);
+    acCache.set(prefix, items);
+    if (acCache.size > 80) acCache.delete(acCache.keys().next().value);
+    return items;
+  }
+
+  async function openAutocomplete(force) {
+    const { text, start } = currentPrefix();
+    if (!force && text.length < 2) return closeAutocomplete();
+    const token = ++ac.token;
+    let items;
+    try {
+      items = await fetchCompletions(text);
+    } catch (e) {
+      return closeAutocomplete();
+    }
+    if (token !== ac.token) return;          // a newer request superseded this
+    if (!items.length) return closeAutocomplete();
+    ac.items = items;
+    ac.sel = 0;
+    ac.from = start;
+    ac.open = true;
+    renderAutocomplete();
+  }
+
+  function renderAutocomplete() {
+    acEl.innerHTML = "";
+    ac.items.forEach((it, i) => {
+      const row = el("div", "ac-item" + (i === ac.sel ? " sel" : ""));
+      const kind = el("span", "ac-kind " + it.kind, shortKind(it.kind));
+      const main = el("div", "ac-main");
+      main.appendChild(el("div", "ac-name", it.name));
+      if (it.display_name) main.appendChild(el("div", "ac-title", it.title));
+      else if (it.type) main.appendChild(el("div", "ac-type", it.type));
+      row.appendChild(kind);
+      row.appendChild(main);
+      row.onmousedown = (ev) => { ev.preventDefault(); acceptCompletion(i); };
+      acEl.appendChild(row);
+    });
+    const p = caretXY(ac.from);
+    const wrapRect = $(".editor-wrap").getBoundingClientRect();
+    const gut = $("#gutter").getBoundingClientRect().width;
+    let left = gut + p.x - editor.scrollLeft;
+    let top = p.y + metrics.lh - codeScroll.scrollTop;
+    acEl.classList.remove("hidden");
+    // flip above the line when there is no room below
+    const h = acEl.getBoundingClientRect().height;
+    if (top + h > wrapRect.height && p.y - h > 0) top = p.y - h - codeScroll.scrollTop;
+    acEl.style.left = Math.max(4, Math.min(left, wrapRect.width - 320)) + "px";
+    acEl.style.top = Math.max(0, top) + "px";
+    scrollSelIntoView();
+  }
+
+  function shortKind(k) {
+    return ({ theorem: "thm", definition: "def", axiom: "ax",
+              constructor: "ctor", recursor: "rec", inductive: "ind",
+              opaque: "const", tactic: "tac", keyword: "kw" }[k] || k)
+      .slice(0, 5);
+  }
+
+  function scrollSelIntoView() {
+    const row = acEl.children[ac.sel];
+    if (row) row.scrollIntoView({ block: "nearest" });
+  }
+
+  function moveAutocomplete(delta) {
+    ac.sel = (ac.sel + delta + ac.items.length) % ac.items.length;
+    renderAutocomplete();
+  }
+
+  function acceptCompletion(index) {
+    const it = ac.items[index != null ? index : ac.sel];
+    if (!it) return closeAutocomplete();
+    const insert = it.display_name || it.name;
+    const pos = editor.selectionStart;
+    editor.setRangeText(insert, ac.from, pos, "end");
+    closeAutocomplete();
+    editor.dispatchEvent(new Event("input"));
+    updateCaret();
+  }
+
+  function closeAutocomplete() {
+    ac.open = false;
+    ac.items = [];
+    acEl.classList.add("hidden");
+  }
+
+  /* ===================================================================
+   * Hover and go-to-definition
+   * =================================================================== */
+  const tip = $("#hoverTip");
+  let hoverTimer = null;
+  let hoverWord = null;
+
+  function hideTip() {
+    tip.classList.add("hidden");
+    hoverWord = null;
+  }
+
+  async function showTipFor(word, clientX, clientY) {
+    let r;
+    try {
+      r = await api("GET", "/api/hover?name=" + encodeURIComponent(word));
+    } catch (e) { return; }
+    const info = r && r.info;
+    if (!info || hoverWord !== word) return;
+    tip.innerHTML = "";
+    if (info.title && info.title !== info.name) {
+      tip.appendChild(el("div", "tip-title", info.title));
+    }
+    tip.appendChild(el("div", "tip-name", info.name));
+    if (info.type) tip.appendChild(el("div", "tip-type", info.type));
+    if (info.status_label) {
+      tip.appendChild(el("div", "tip-status " + info.status, info.status_label));
+    }
+    if (info.doc) tip.appendChild(el("div", "tip-doc", info.doc));
+    if (info.axioms && info.axioms.length) {
+      tip.appendChild(el("div", "tip-doc",
+                         "axioms: " + info.axioms.join(", ")));
+    }
+    tip.appendChild(el("div", "tip-hint",
+                       (isMac ? "⌘" : "Ctrl") + "+click to go to definition"));
+    tip.classList.remove("hidden");
+    const box = tip.getBoundingClientRect();
+    const x = Math.min(clientX + 12, window.innerWidth - box.width - 10);
+    const y = clientY + 22 + box.height > window.innerHeight
+      ? clientY - box.height - 10 : clientY + 22;
+    tip.style.left = Math.max(6, x) + "px";
+    tip.style.top = Math.max(6, y) + "px";
+  }
+
+  function showSymbolInInspector(name) {
+    switchUtil("inspector");
+    api("GET", "/api/hover?name=" + encodeURIComponent(name)).then((r) => {
+      const info = r && r.info;
+      const panel = $("#inspectorSymbol");
+      panel.innerHTML = "";
+      if (!info) {
+        panel.appendChild(el("div", "empty-hint", "Unknown symbol: " + name));
+        return;
+      }
+      const item = el("div", "inspector-item");
+      item.appendChild(el("div", "ik", (info.kind || "symbol").toUpperCase()));
+      if (info.title && info.title !== info.name) {
+        item.appendChild(el("div", "tip-title", info.title));
+      }
+      item.appendChild(el("div", "tip-name", info.name));
+      if (info.type) item.appendChild(el("div", "tip-type", info.type));
+      if (info.status_label) {
+        item.appendChild(el("div", "tip-status " + info.status,
+                            info.status_label));
+      }
+      if (info.doc) item.appendChild(el("div", "tip-doc", info.doc));
+      if (info.module) {
+        item.appendChild(el("div", "tip-doc", "module: " + info.module));
+      }
+      panel.appendChild(item);
+    });
+  }
+
+  async function goToDefinition(word) {
+    let r;
+    try {
+      r = await api("GET", "/api/definition?name=" + encodeURIComponent(word));
+    } catch (e) { return; }
+    const loc = r && r.location;
+    if (loc && loc.span) {
+      const file = (state.files || []).find(
+        (f) => f.path.replace(/\.epsl$/, "") === loc.module);
+      const here = state.active &&
+        state.active.replace(/\.epsl$/, "").split("/").pop() === loc.module;
+      // only navigate when the definition is in a file we can actually show;
+      // a library span would otherwise scroll to a meaningless line here
+      if (here) {
+        gotoSpan(loc.span);
+        toast("Jumped to " + loc.name, "ok");
+        return;
+      }
+      if (file) {
+        await openFile(file.path);
+        setTimeout(() => gotoSpan(loc.span), 140);
+        toast("Jumped to " + loc.name, "ok");
+        return;
+      }
+    }
+    // library symbols have no file in the workspace: show them instead of
+    // navigating nowhere
+    showSymbolInInspector(word);
+  }
+
+  /* ===================================================================
+   * Console
+   * =================================================================== */
+  const consoleInput = $("#consoleInput");
+  const CONSOLE_HISTORY_KEY = "epsilon.console.history.v1";
+  let consoleHistory = [];
+  let histIdx = 0;
+
+  function loadConsoleHistory() {
+    try {
+      consoleHistory = JSON.parse(localStorage.getItem(CONSOLE_HISTORY_KEY)) || [];
+    } catch (e) { consoleHistory = []; }
+    histIdx = consoleHistory.length;
+  }
+
+  function saveConsoleHistory() {
+    try {
+      localStorage.setItem(CONSOLE_HISTORY_KEY,
+                           JSON.stringify(consoleHistory.slice(-200)));
+    } catch (e) {}
+  }
+
+  function appendConsole(text, cls) {
+    const log = $("#consoleLog");
+    const line = el("div", "console-line " + (cls || ""));
+    line.textContent = text;
+    if (cls !== "in") {
+      const copy = el("button", "console-copy", "copy");
+      copy.title = "Copy this result";
+      copy.onclick = () => {
+        navigator.clipboard && navigator.clipboard.writeText(text);
+        toast("Copied", "ok");
+      };
+      line.appendChild(copy);
+    }
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+    return line;
+  }
+
+  function clearConsole() {
+    $("#consoleLog").innerHTML = "";
+  }
+
+  async function runConsole(code) {
+    consoleHistory.push(code);
+    saveConsoleHistory();
+    histIdx = consoleHistory.length;
+    appendConsole(code, "in");
+    const pending = appendConsole("…", "pending");
+    let r;
+    try {
+      r = await api("POST", "/api/eval", { code });
+    } catch (e) {
+      pending.remove();
+      appendConsole(String(e), "err");
+      return;
+    }
+    pending.remove();
+    if (r.output) appendConsole(r.output, r.ok ? "" : "err");
+    (r.diagnostics || []).forEach((d) => appendConsole(d, "err"));
+  }
+
+  function autosizeConsoleInput() {
+    consoleInput.style.height = "auto";
+    consoleInput.style.height =
+      Math.min(140, consoleInput.scrollHeight) + "px";
+  }
+
+  async function consoleComplete() {
+    const pos = consoleInput.selectionStart;
+    const v = consoleInput.value;
+    let s = pos;
+    while (s > 0 && IDENT_RE.test(v[s - 1])) s--;
+    const prefix = v.slice(s, pos);
+    if (prefix.length < 2) return;
+    const items = await fetchCompletions(prefix);
+    if (!items.length) return;
+    if (items.length === 1) {
+      consoleInput.setRangeText(items[0].name, s, pos, "end");
+      return;
+    }
+    appendConsole(items.slice(0, 12).map((i) => i.name).join("   "), "hint");
+  }
+
+  /* ===================================================================
+   * Resizable layout
+   * =================================================================== */
+  const LAYOUT_KEY = "epsilon.layout.v1";
+  const layout = { side: 280, util: 320, bottom: 190 };
+
+  function loadLayout() {
+    try {
+      Object.assign(layout, JSON.parse(localStorage.getItem(LAYOUT_KEY)) || {});
+    } catch (e) {}
+    applyLayout();
+  }
+
+  function applyLayout() {
+    const app = document.getElementById("app");
+    app.style.gridTemplateColumns =
+      `52px ${layout.side}px 1fr ${layout.util}px`;
+    app.style.gridTemplateRows = `44px 1fr ${layout.bottom}px 26px`;
+    try {
+      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+    } catch (e) {}
+  }
+
+  function resetLayout() {
+    layout.side = 280; layout.util = 320; layout.bottom = 190;
+    applyLayout();
+    toast("Layout reset", "ok");
+  }
+
+  function initResizers() {
+    const app = document.getElementById("app");
+    const bounds = { side: [150, 640], util: [180, 720], bottom: [60, 620] };
+
+    $$(".resizer").forEach((handle) => {
+      const which = handle.dataset.resize;
+      let startPos = 0, startVal = 0, dragging = false;
+
+      const onMove = (ev) => {
+        if (!dragging) return;
+        const p = ev.touches ? ev.touches[0] : ev;
+        const delta = (which === "bottom")
+          ? startPos - p.clientY
+          : (which === "util" ? startPos - p.clientX : p.clientX - startPos);
+        const [lo, hi] = bounds[which];
+        layout[which] = Math.max(lo, Math.min(hi, startVal + delta));
+        applyLayout();
+      };
+      const onUp = () => {
+        dragging = false;
+        document.body.classList.remove("resizing");
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        if (!graphCanvas.classList.contains("hidden")) drawGraph();
+      };
+      handle.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        dragging = true;
+        startPos = which === "bottom" ? ev.clientY : ev.clientX;
+        startVal = layout[which];
+        document.body.classList.add("resizing");
+        window.addEventListener("mousemove", onMove);
+        window.addEventListener("mouseup", onUp);
+      });
+      handle.addEventListener("dblclick", resetLayout);
+      // keyboard accessible
+      handle.addEventListener("keydown", (ev) => {
+        const step = ev.shiftKey ? 40 : 12;
+        if (ev.key === "ArrowLeft" || ev.key === "ArrowUp") {
+          layout[which] += which === "side" ? -step : step;
+        } else if (ev.key === "ArrowRight" || ev.key === "ArrowDown") {
+          layout[which] += which === "side" ? step : -step;
+        } else return;
+        ev.preventDefault();
+        const [lo, hi] = bounds[which];
+        layout[which] = Math.max(lo, Math.min(hi, layout[which]));
+        applyLayout();
+      });
+    });
+  }
+
+  /* ===================================================================
+   * Editor intelligence wiring
+   * =================================================================== */
+  function wireIntelligence() {
+    measureText();
+    editor.classList.add("custom-caret");
+    loadLayout();
+    initResizers();
+    loadConsoleHistory();
+
+    // --- caret ---
+    ["input", "click", "keyup", "focus", "select"].forEach((ev) =>
+      editor.addEventListener(ev, updateCaret));
+    editor.addEventListener("blur", () => { updateCaret(); closeAutocomplete(); });
+    codeScroll.addEventListener("scroll", () => {
+      caretEl.style.marginTop = -codeScroll.scrollTop + "px";
+      caretEl.style.marginLeft = -codeScroll.scrollLeft + "px";
+      if (ac.open) renderAutocomplete();
+    });
+
+    // --- autocomplete keys, before the editor's own handler ---
+    editor.addEventListener("keydown", (ev) => {
+      const mod = isMac ? ev.metaKey : ev.ctrlKey;
+      if (mod && ev.code === "Space") {
+        ev.preventDefault();
+        openAutocomplete(true);
+        return;
+      }
+      if (!ac.open) return;
+      if (ev.key === "ArrowDown") { ev.preventDefault(); moveAutocomplete(1); }
+      else if (ev.key === "ArrowUp") { ev.preventDefault(); moveAutocomplete(-1); }
+      else if (ev.key === "Enter" || ev.key === "Tab") {
+        ev.preventDefault();
+        ev.stopPropagation();
+        acceptCompletion();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        closeAutocomplete();
+      }
+    }, true);
+
+    editor.addEventListener("input", () => {
+      const { text } = currentPrefix();
+      if (text.length >= 2) openAutocomplete(false);
+      else closeAutocomplete();
+    });
+
+    // --- hover ---
+    editor.addEventListener("mousemove", (ev) => {
+      if (ev.ctrlKey || ev.metaKey) editor.classList.add("linking");
+      else editor.classList.remove("linking");
+      clearTimeout(hoverTimer);
+      const off = offsetAtPoint(ev.clientX, ev.clientY);
+      const w = off == null ? null : wordAt(off);
+      if (!w) { hideTip(); return; }
+      if (w.word === hoverWord) return;
+      hoverWord = w.word;
+      const { clientX, clientY } = ev;
+      hoverTimer = setTimeout(() => showTipFor(w.word, clientX, clientY), 320);
+    });
+    editor.addEventListener("mouseleave", () => {
+      clearTimeout(hoverTimer);
+      hideTip();
+      editor.classList.remove("linking");
+    });
+    window.addEventListener("keyup", (ev) => {
+      if (!ev.ctrlKey && !ev.metaKey) editor.classList.remove("linking");
+    });
+
+    // --- ctrl/cmd + click: go to definition ---
+    editor.addEventListener("mousedown", (ev) => {
+      const mod = isMac ? ev.metaKey : ev.ctrlKey;
+      if (!mod) return;
+      const off = offsetAtPoint(ev.clientX, ev.clientY);
+      const w = off == null ? null : wordAt(off);
+      if (!w) return;
+      ev.preventDefault();
+      hideTip();
+      goToDefinition(w.word);
+    });
+
+    // --- console ---
+    consoleInput.addEventListener("input", autosizeConsoleInput);
+    consoleInput.addEventListener("keydown", async (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey) {
+        ev.preventDefault();
+        const code = consoleInput.value.trim();
+        if (!code) return;
+        consoleInput.value = "";
+        autosizeConsoleInput();
+        await runConsole(code);
+      } else if (ev.key === "Tab") {
+        ev.preventDefault();
+        consoleComplete();
+      } else if (ev.key === "ArrowUp" && !consoleInput.value.includes("\n")) {
+        if (histIdx > 0) {
+          histIdx--;
+          consoleInput.value = consoleHistory[histIdx] || "";
+          autosizeConsoleInput();
+        }
+      } else if (ev.key === "ArrowDown" && !consoleInput.value.includes("\n")) {
+        if (histIdx < consoleHistory.length) {
+          histIdx++;
+          consoleInput.value = consoleHistory[histIdx] || "";
+          autosizeConsoleInput();
+        }
+      }
+    });
+    $("#consoleClear").onclick = clearConsole;
+
+    // --- graph tools ---
+    wireGraphFilters();
+    $("#graphFit").onclick = fitGraphView;
+    $("#graphReset").onclick = resetGraphView;
+
+    window.addEventListener("resize", () => {
+      measureText();
+      updateCaret();
+      if (!graphCanvas.classList.contains("hidden")) drawGraph();
+    });
+  }
+
+  /* ===================================================================
    * wiring
    * =================================================================== */
   function wire() {
@@ -999,6 +1882,7 @@
       if (saved) document.documentElement.setAttribute("data-theme", saved);
     } catch (e) {}
     wire();
+    wireIntelligence();
     state.meta = await api("GET", "/api/meta");
     $("#metaVersion").textContent = "v" + (state.meta.version || "0.1");
     await loadFiles();

@@ -149,7 +149,13 @@ POST /api/eval {code}          -> {"ok", "output": str, "diagnostics": [...]}
     expression - try commands first, fall back to wrapping in #eval)
 POST /api/export {path?, format: "latex"|"markdown"|"json"|"python"|
                   "python-numpy"|"mathml"|"svg-plots"} -> {"ok","content": str}
-GET  /api/completions?prefix=  -> {"items":[{"name","kind","type"}]}
+GET  /api/completions?prefix=  -> {"items":[{"name","kind","type",
+                                    "display_name","title"}]}
+GET  /api/hover?name=          -> {"info": intelligence.hover(...) | null}
+GET  /api/definition?name=     -> {"location": {"name","module","span"} | null,
+                                   "info": intelligence.hover(...) | null}
+   (location is null for library symbols with no workspace file; callers
+    show `info` inline instead of navigating nowhere)
 GET  /api/meta                 -> {"version","language_version","brand"}
 ```
 

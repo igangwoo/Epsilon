@@ -137,6 +137,18 @@ plot Real.sin, x ∈ [-6, 6]
       return jsonResponse(JSON.parse(out));
     }
 
+    if (path === "/api/hover") {
+      PY.globals.set("_n", u.searchParams.get("name") || "");
+      return jsonResponse(JSON.parse(
+        PY.runPython("import bridge; bridge.hover(_n)")));
+    }
+
+    if (path === "/api/definition") {
+      PY.globals.set("_n", u.searchParams.get("name") || "");
+      return jsonResponse(JSON.parse(
+        PY.runPython("import bridge; bridge.definition(_n)")));
+    }
+
     return jsonResponse({ detail: "not found" }, 404);
   }
 

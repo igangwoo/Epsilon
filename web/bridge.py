@@ -130,12 +130,28 @@ def _run_export(session, fmt, module):
 _completion_session = None
 
 
-def completions(prefix=""):
+def hover(name):
+    from epsilon.intelligence import hover as get_hover
+    return json.dumps({"info": get_hover(_shared_session(), name)})
+
+
+def definition(name):
+    from epsilon.intelligence import goto_definition, hover as get_hover
+    s = _shared_session()
+    return json.dumps({"location": goto_definition(s, name),
+                       "info": get_hover(s, name)})
+
+
+def _shared_session():
     global _completion_session
     if _completion_session is None:
         _completion_session = Session()
+    return _completion_session
+
+
+def completions(prefix=""):
     from epsilon.intelligence import completions as get
-    items = get(_completion_session, prefix, limit=100)
+    items = get(_shared_session(), prefix, limit=100)
     return json.dumps({"items": [{"name": i["name"], "kind": i["kind"],
                                   "type": i.get("type", ""),
                                   "display_name": i.get("display_name"),

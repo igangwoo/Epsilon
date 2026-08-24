@@ -100,3 +100,38 @@ def test_serves_index_html(client):
     r = client.get("/")
     # either the IDE html or the API fallback
     assert r.status_code == 200
+
+
+def test_hover_endpoint(client):
+    r = client.get("/api/hover", params={"name": "Nat.add_comm"}).json()
+    info = r["info"]
+    assert info["name"] == "Nat.add_comm"
+    assert info["title"] == "Natural Numbers · Addition Commutativity"
+    assert info["status"] == "proven"
+
+
+def test_hover_resolves_a_mathematical_name(client):
+    r = client.get("/api/hover",
+                   params={"name": "NaturalNumbers.Addition.Commutativity"}).json()
+    assert r["info"]["name"] == "Nat.add_comm"
+
+
+def test_hover_unknown_name_is_not_an_error(client):
+    r = client.get("/api/hover", params={"name": "no_such_symbol_xyz"})
+    assert r.status_code == 200
+    assert r.json()["info"] is None
+
+
+def test_definition_endpoint(client):
+    r = client.get("/api/definition", params={"name": "Nat.add_comm"}).json()
+    assert r["info"]["name"] == "Nat.add_comm"
+    # a library result has a source span in its own module
+    assert r["location"] is None or r["location"]["module"] == "prelude"
+
+
+def test_completions_carry_mathematical_names(client):
+    items = client.get("/api/completions",
+                       params={"prefix": "add_comm"}).json()["items"]
+    named = [i for i in items if i.get("display_name")]
+    assert named, "expected at least one completion with a mathematical name"
+    assert all("title" in i for i in items)

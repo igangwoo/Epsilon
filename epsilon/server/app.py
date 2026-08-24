@@ -279,6 +279,22 @@ def create_app() -> FastAPI:
                            "title": i.get("title") or i["name"]}
                           for i in items]}
 
+    # -------------------- editor intelligence --------------------
+    @app.get("/api/hover")
+    def hover_info(name: str) -> dict:
+        from ..intelligence import hover as get_hover
+        info = get_hover(_completion_session(), name)
+        return {"info": info}
+
+    @app.get("/api/definition")
+    def definition(name: str) -> dict:
+        from ..intelligence import goto_definition, hover as get_hover
+        session = _completion_session()
+        loc = goto_definition(session, name)
+        # a library symbol has no workspace file to open, so return enough
+        # for the caller to show it inline instead of navigating nowhere
+        return {"location": loc, "info": get_hover(session, name)}
+
     # -------------------- meta --------------------
     @app.get("/api/meta")
     def meta() -> dict:
