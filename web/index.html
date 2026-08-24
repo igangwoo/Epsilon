@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Epsilon</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c78ff'/%3E%3Ctext x='16' y='23' font-size='21' font-family='Georgia,serif' fill='white' text-anchor='middle'%3E%CE%B5%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="app.css?v=783cbe45330e" />
+  <link rel="stylesheet" href="app.css?v=2c7efff9c85d" />
   <!-- web-only overrides; app.css stays the shared source of truth -->
-  <link rel="stylesheet" href="web.css?v=783cbe45330e" />
-  <script src="vfs.js?v=783cbe45330e"></script>
+  <link rel="stylesheet" href="web.css?v=2c7efff9c85d" />
+  <script src="vfs.js?v=2c7efff9c85d"></script>
   <style>
     /* one-time boot overlay while Pyodide + the engine load */
     #boot {
@@ -49,6 +49,9 @@
       color: #ffb3bf; font: inherit; font-size: 12.5px;
     }
     .boot-retry:hover { background: rgba(255,92,114,0.28); }
+    .boot-retry + .boot-retry { margin-left: 8px; }
+    .boot-where { font-size: 11px; opacity: 0.75; font-family: ui-monospace,
+      SFMono-Regular, Menlo, Consolas, monospace; }
     @media (prefers-reduced-motion: reduce) { #boot .logo { animation: none; } }
   </style>
 </head>
@@ -275,7 +278,7 @@
   <!-- toasts -->
   <div class="toast-stack" id="toastStack"></div>
 
-  <script src="panes.js?v=783cbe45330e"></script>
-  <script src="boot.js?v=783cbe45330e"></script>
+  <script src="panes.js?v=2c7efff9c85d"></script>
+  <script src="boot.js?v=2c7efff9c85d"></script>
 </body>
 </html>

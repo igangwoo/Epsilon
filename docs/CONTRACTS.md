@@ -276,6 +276,11 @@ standing in for Pyodide) against an index.html stripped back to `boot.js`
 alone, and checks that a missing asset is reported on the page rather than
 leaving it dead.
 
+Pyodide takes seconds to produce a first result, so **the IDE is on screen
+and interactive well before any of it arrives**. Anything the IDE draws must
+therefore cope with there being nothing to draw yet - the same test suite
+makes /api/check slow and interacts during that window.
+
 `web/vfs.js` is the browser workspace: the file/folder/rename/duplicate half
 of the API above, against a `{path: content}` map in localStorage, with the
 same status codes for the same requests. `tests/test_web_vfs.py` runs the

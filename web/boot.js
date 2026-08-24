@@ -13,7 +13,7 @@
   const WHEEL = "./epsilon_math-0.1.0-py3-none-any.whl";
   //!BUILD_ID — stamped by scripts/build_web.py from the asset contents,
   // so a fresh page can never pick up a stale cached script
-  const BUILD_ID = "783cbe45330e";
+  const BUILD_ID = "2c7efff9c85d";
   const CACHE_BUST = "?v=" + BUILD_ID;
 
   const realFetch = window.fetch.bind(window);
@@ -249,32 +249,71 @@ plot Real.sin, x ∈ [-6, 6]
     });
   }
 
-  /** Show a failure on the page. A dead page with no message helps nobody. */
+  /**
+   * Show a failure on the page. A dead page with no message helps nobody.
+   *
+   * A failure before the IDE is up and one after it are different events and
+   * are reported differently: the first means Epsilon never started, the
+   * second means something went wrong in a working IDE, and calling the
+   * second one a startup failure sends the reader looking in the wrong place.
+   * The second also names where it happened, so a report can be acted on.
+   */
   function fail(err, hint) {
+    const booting = !!document.getElementById("boot");
     const message = String(err && err.message ? err.message : err);
-    step("Startup failed.", 100);
-    detail("");
+    const where = firstAppFrame(err);
+
     let host = document.getElementById("boot");
-    if (!host) {
-      // the IDE was already up, so paint a banner over it instead
-      host = document.createElement("div");
-      host.className = "boot-banner";
-      document.body.appendChild(host);
+    if (booting) {
+      step("Startup failed.", 100);
+      detail("");
+    } else {
+      host = document.querySelector(".boot-banner");
+      if (!host) {
+        host = document.createElement("div");
+        host.className = "boot-banner";
+        document.body.appendChild(host);
+      }
     }
-    if (host.querySelector(".boot-error")) return;
+    if (host.querySelector(".boot-error")) return;   // one report is enough
+
     const box = document.createElement("div");
     box.className = "boot-error";
-    box.innerHTML = "<b>Could not start Epsilon.</b><br>" + escapeHTML(message) +
+    box.innerHTML =
+      "<b>" + (booting ? "Could not start Epsilon."
+                       : "Something went wrong.") + "</b><br>" +
+      escapeHTML(message) +
+      (where ? '<br><span class="boot-where">' + escapeHTML(where) + "</span>" : "") +
       (hint ? "<br><br>" + hint : "");
+
+    const actions = document.createElement("div");
     const retry = document.createElement("button");
     retry.className = "boot-retry";
     retry.textContent = "Reload";
     retry.onclick = () => window.location.reload();
-    box.appendChild(document.createElement("br"));
-    box.appendChild(retry);
+    actions.appendChild(retry);
+    if (!booting) {
+      const dismiss = document.createElement("button");
+      dismiss.className = "boot-retry";
+      dismiss.textContent = "Dismiss";
+      dismiss.onclick = () => host.remove();
+      actions.appendChild(dismiss);
+    }
+    box.appendChild(actions);
     host.appendChild(box);
     // eslint-disable-next-line no-console
     console.error(err);
+  }
+
+  /** The first stack frame in our own code — where a report should point. */
+  function firstAppFrame(err) {
+    const stack = err && err.stack;
+    if (typeof stack !== "string") return "";
+    const line = stack.split("\n")
+      .find((l) => /\/(app|panes|vfs|boot)\.js/.test(l));
+    if (!line) return "";
+    const m = line.match(/((?:app|panes|vfs|boot)\.js[^):\s]*:\d+:\d+)/);
+    return m ? m[1] : line.trim().slice(0, 120);
   }
 
   function escapeHTML(s) {

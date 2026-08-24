@@ -70,8 +70,13 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def _make_server(directory, port):
-    """Serve `directory`, and run its Python through this interpreter."""
+def _make_server(directory, port, check_delay=0.0):
+    """Serve `directory`, and run its Python through this interpreter.
+
+    `check_delay` makes /api/check slow the way the real Pyodide build is on
+    a first run, which is what opens the window between the IDE appearing and
+    its first result arriving.
+    """
     import ast
     import types
     from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
@@ -89,6 +94,9 @@ def _make_server(directory, port):
     ns = {"__name__": "__main__"}
 
     def run_code(code):
+        if check_delay and "bridge.check" in code:
+            import time
+            time.sleep(check_delay)
         if "await " in code:             # runPythonAsync takes top-level await
             import asyncio
             body = "\n".join("    " + line for line in code.splitlines())
@@ -147,6 +155,7 @@ const STUB = {stub};
   await pg.route('**/cdn.jsdelivr.net/**', (r) =>
     r.fulfill({{ status: 200, contentType: 'application/javascript', body: STUB }}));
   await pg.goto('http://127.0.0.1:{port}/index.html', {{ waitUntil: 'domcontentloaded' }});
+  {script}
   await pg.waitForTimeout({wait});
   const out = await pg.evaluate(`({{
     bootGone: !document.querySelector('#boot'),
@@ -163,7 +172,7 @@ const STUB = {stub};
 """
 
 
-def boot_site(tmp_path, index_html=None, wait=30000):
+def boot_site(tmp_path, index_html=None, wait=30000, script="", check_delay=0.0):
     """Serve a copy of `web/` (optionally with a doctored index.html) and boot it."""
     site = tmp_path / "site"
     shutil.copytree(WEB, site)
@@ -171,14 +180,14 @@ def boot_site(tmp_path, index_html=None, wait=30000):
         (site / "index.html").write_text(index_html)
 
     port = _free_port()
-    server = _make_server(site, port)
+    server = _make_server(site, port, check_delay=check_delay)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         driver = tmp_path / "drive.cjs"
         driver.write_text(DRIVER.format(playwright=str(PLAYWRIGHT),
                                         stub=json.dumps(PYODIDE_STUB),
-                                        port=port, wait=wait))
+                                        port=port, wait=wait, script=script))
         r = subprocess.run([NODE, str(driver)], capture_output=True, text=True,
                            timeout=180)
         assert r.returncode == 0, r.stderr
@@ -232,7 +241,7 @@ def test_a_missing_asset_is_reported_on_the_page(tmp_path):
         driver = tmp_path / "drive.cjs"
         driver.write_text(DRIVER.format(playwright=str(PLAYWRIGHT),
                                         stub=json.dumps(PYODIDE_STUB),
-                                        port=port, wait=8000))
+                                        port=port, wait=8000, script=""))
         r = subprocess.run([NODE, str(driver)], capture_output=True, text=True,
                            timeout=120)
         assert r.returncode == 0, r.stderr
@@ -241,3 +250,44 @@ def test_a_missing_asset_is_reported_on_the_page(tmp_path):
         server.shutdown()
     assert "Could not start Epsilon" in out["bootError"]
     assert "vfs.js" in out["bootError"]
+
+
+def test_interacting_while_the_first_check_is_still_running(tmp_path):
+    """The failure a user hits on a slow first run.
+
+    Pyodide takes seconds to produce a first result, so the IDE is on screen
+    and interactive well before any of it arrives. Anything drawn in that
+    window has to cope with there being nothing to draw yet — the dependency
+    graph did not, because its `links` are derived from a check and drawing
+    happens on every pane change, tab switch and theme toggle.
+    """
+    script = """
+  // wait for the IDE, then do what a user does while the check is in flight
+  await pg.waitForFunction("window.EpsilonPanes && document.querySelector('.pane-tab')",
+                           null, { timeout: 60000 });
+  await pg.evaluate("EpsilonPanes.openView('deps')");
+  await pg.evaluate("EpsilonPanes.splitPane('row')");
+  await pg.evaluate("document.querySelector('#themeBtn').click()");
+  await pg.evaluate("EpsilonPanes.applyProfile('research')");
+  await pg.waitForTimeout(1500);
+"""
+    out = boot_site(tmp_path, script=script, check_delay=6.0, wait=30000)
+    assert out["errors"] == [], out["errors"]
+    assert out["bootError"] == "", out["bootError"]
+    assert out["panes"] >= 1
+
+
+def test_a_runtime_error_is_not_reported_as_a_startup_failure(tmp_path):
+    """Calling a failure in a working IDE a startup failure sends the reader
+    looking in the wrong place; the report also has to say where it happened."""
+    script = """
+  await pg.waitForFunction("window.EpsilonPanes && document.querySelector('.pane-tab')",
+                           null, { timeout: 60000 });
+  await pg.waitForTimeout(2000);
+  await pg.evaluate("setTimeout(() => { window.__nope.forEach(() => {}); }, 0)");
+  await pg.waitForTimeout(1200);
+"""
+    out = boot_site(tmp_path, script=script, wait=6000)
+    assert "Something went wrong" in out["bootError"], out["bootError"]
+    assert "Could not start Epsilon" not in out["bootError"]
+    assert "Dismiss" in out["bootError"]

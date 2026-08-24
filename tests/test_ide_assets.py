@@ -120,3 +120,36 @@ def test_check_is_gated_to_epsilon():
     run_check = app[app.index("async function runCheck()"):]
     run_check = run_check[:run_check.index("\n  function setCheckState")]
     assert "isEpsilon()" in run_check, "runCheck does not gate on the language"
+
+
+def test_the_graph_is_never_left_without_its_derived_links():
+    """`graphData.links` is derived from a check, but drawing happens on
+    every pane change, tab switch and theme toggle — including before the
+    first result arrives. Every shape assigned to it must be complete."""
+    app = APP.read_text()
+    assigns = re.findall(r"graphData = \{(.*?)\};", app, re.S)
+    assigns += re.findall(r"graphData = (\w+)\(\)", app)
+    assert assigns, "graphData is never assigned?"
+    for a in assigns:
+        if a.isidentifier():                      # a factory: check its body
+            body = re.search(rf"const {a} = \(\) => \((\{{.*?\}})\);", app, re.S)
+            assert body, f"{a} not found"
+            a = body.group(1)
+        for key in ("nodes", "edges", "links"):
+            assert f"{key}:" in a, f"a graphData shape is missing `{key}`: {a[:80]}"
+
+
+def test_panels_fed_by_a_check_tolerate_having_none_yet():
+    """Everything the IDE draws before its first result must accept nothing.
+
+    Pyodide takes seconds to produce one, so the IDE is interactive well
+    before any of it arrives.
+    """
+    app = APP.read_text()
+    for call in ("renderPlots(", "renderTheorems(", "renderProblems(",
+                 "renderDeps(", "renderInspector("):
+        for m in re.finditer(re.escape(call) + r"([^)]*)\)", app):
+            arg = m.group(1).strip()
+            if arg.startswith(("r.", "state.lastCheck.")):
+                assert "||" in arg, (
+                    f"{call}{arg}) can be called with nothing to show")

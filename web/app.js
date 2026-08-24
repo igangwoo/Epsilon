@@ -1261,7 +1261,13 @@
    * a wall of overlapping text.
    * =================================================================== */
   const graphCanvas = $("#graphCanvas");
-  let graphData = { nodes: [], edges: [] };
+  // `links` is derived from `edges` in buildAdjacency, but drawing can
+  // happen before any check has produced a graph — opening the pane,
+  // switching a tab or toggling the theme all draw. Every shape this
+  // ever holds carries all three, so a draw before the first check is
+  // an empty picture rather than a crash.
+  const emptyGraph = () => ({ nodes: [], edges: [], links: [] });
+  let graphData = emptyGraph();
   const graphView = { x: 0, y: 0, scale: 1 };
   const graphSim = {
     running: false, frame: null, alpha: 0,
@@ -1312,7 +1318,8 @@
     const prev = new Map(graphData.nodes.map((n) => [n.name, n]));
     graphData = { nodes: nodes.map((n) => ({ ...n })),
                   edges: edges.filter((e) => visible.has(e.from) &&
-                                             visible.has(e.to)) };
+                                             visible.has(e.to)),
+                  links: [] };
     renderGraphLegend();
     const R = 260;
     graphData.nodes.forEach((n, i) => {
