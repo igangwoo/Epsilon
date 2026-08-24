@@ -20,6 +20,9 @@
 
   const LAYOUT_KEY = "epsilon.workspace.v1";
   const MIN_PANE = 90;
+  //: sash thickness, shared with the stylesheet so the two halves of a
+  //: split always add up to the whole
+  const SASH = 6;
 
   let uid = 0;
   const nextId = (p) => `${p}${++uid}`;
@@ -229,12 +232,17 @@
       });
     }
     persist();
-    if (state.onChange) state.onChange();
+    notify();
     // let views react to becoming visible
     leaves().forEach((l) => {
       const v = views.get(l.active);
       if (v && v.onShow && isVisible(l)) v.onShow();
     });
+  }
+
+  /** Tell the host the geometry changed, so canvases can resize themselves. */
+  function notify() {
+    if (state.onChange) state.onChange();
   }
 
   function isVisible(l) {
@@ -248,13 +256,13 @@
     const a = renderNode(node.a);
     const b = renderNode(node.b);
     const pct = Math.max(0.08, Math.min(0.92, node.ratio)) * 100;
-    a.style.flex = `0 0 calc(${pct}% - 3px)`;
+    a.style.flex = `0 0 calc(${pct}% - ${SASH / 2}px)`;
     b.style.flex = "1 1 0";
     const handle = document.createElement("div");
     handle.className = "pane-sash " + node.dir;
     handle.tabIndex = 0;
     handle.title = "Drag to resize · double-click to even out";
-    wireSash(handle, node, box);
+    wireSash(handle, node, box, a);
     box.appendChild(a);
     box.appendChild(handle);
     box.appendChild(b);
@@ -385,32 +393,85 @@
 
   /* ---------------- interaction ---------------- */
 
-  function wireSash(handle, node, box) {
-    let dragging = false;
+  /**
+   * Dragging a sash resizes the two panes it sits between.
+   *
+   * The one thing a drag must not do is re-render: `render()` rebuilds the
+   * whole tree, which detaches the very `box` this closure measures against.
+   * A detached element reports a zero-sized rect, so the ratio divides by
+   * zero and the split jumps to its limit and stops following the mouse.
+   * The drag therefore writes the two panes' flex directly and leaves the
+   * tree alone; one notify on release lets canvases resize themselves.
+   *
+   * Moves are coalesced into an animation frame, so a mouse reporting at
+   * 1000 Hz still costs one layout per painted frame.
+   */
+  function wireSash(handle, node, box, a) {
+    let rect = null;
+    let pending = null;
+    let frame = 0;
+
+    const ratioAt = (e) => {
+      const along = node.dir === "row"
+        ? (e.clientX - rect.left) / rect.width
+        : (e.clientY - rect.top) / rect.height;
+      const span = node.dir === "row" ? rect.width : rect.height;
+      const minR = span > 0 ? Math.min(0.45, MIN_PANE / span) : 0.08;
+      return Math.max(minR, Math.min(1 - minR, along));
+    };
+
+    const paint = () => {
+      frame = 0;
+      if (pending == null) return;
+      node.ratio = pending;
+      pending = null;
+      a.style.flex = `0 0 calc(${node.ratio * 100}% - ${SASH / 2}px)`;
+    };
+
     const onMove = (e) => {
-      if (!dragging) return;
-      const r = box.getBoundingClientRect();
-      const ratio = node.dir === "row"
-        ? (e.clientX - r.left) / r.width
-        : (e.clientY - r.top) / r.height;
-      const minR = node.dir === "row" ? MIN_PANE / r.width : MIN_PANE / r.height;
-      node.ratio = Math.max(minR, Math.min(1 - minR, ratio));
-      render();
+      if (!rect) return;
+      pending = ratioAt(e);
+      if (!frame) frame = requestAnimationFrame(paint);
     };
-    const onUp = () => {
-      dragging = false;
+
+    const onUp = (e) => {
+      if (!rect) return;
+      rect = null;
+      if (frame) { cancelAnimationFrame(frame); frame = 0; }
+      paint();
       document.body.classList.remove("resizing");
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      handle.classList.remove("dragging");
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      if (e && handle.releasePointerCapture && e.pointerId != null) {
+        try { handle.releasePointerCapture(e.pointerId); } catch (err) { /* gone */ }
+      }
+      persist();
+      notify();
     };
-    handle.addEventListener("mousedown", (e) => {
+
+    handle.addEventListener("pointerdown", (e) => {
+      if (e.button != null && e.button !== 0) return;
       e.preventDefault();
-      dragging = true;
+      // measured once: the container does not move while its children resize
+      rect = box.getBoundingClientRect();
+      if (!rect.width || !rect.height) { rect = null; return; }
       document.body.classList.add("resizing");
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", onUp);
+      handle.classList.add("dragging");
+      if (handle.setPointerCapture && e.pointerId != null) {
+        try { handle.setPointerCapture(e.pointerId); } catch (err) { /* fine */ }
+      }
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("pointercancel", onUp);
     });
-    handle.addEventListener("dblclick", () => { node.ratio = 0.5; render(); });
+
+    handle.addEventListener("dblclick", () => {
+      node.ratio = 0.5;
+      render();
+    });
+
     handle.addEventListener("keydown", (e) => {
       const step = e.shiftKey ? 0.1 : 0.03;
       if (e.key === "ArrowLeft" || e.key === "ArrowUp") node.ratio -= step;
@@ -421,6 +482,7 @@
       render();
     });
   }
+
 
   function wireDrop(body, node) {
     let zone = null;

@@ -168,3 +168,20 @@ def test_the_pane_api_matches_what_the_contracts_document():
     exported = set(re.findall(r"(\w+)[,:]", block.group(1)))
     missing = sorted(documented - exported)
     assert not missing, f"documented but not exported: {missing}"
+
+
+def test_a_sash_drag_never_re_renders():
+    """`render()` rebuilds the tree, detaching the element a drag measures
+    against; a detached element reports a zero-sized rect, so the ratio
+    divides by zero and the split jumps to its limit instead of following
+    the mouse. A drag writes flex directly and leaves the tree alone."""
+    panes = PANES.read_text()
+    body = re.search(r"function wireSash\(.*?\n  \}\n", panes, re.S)
+    assert body, "wireSash not found"
+    src = body.group(0)
+    # the pointer handlers are everything up to the double-click reset, which
+    # legitimately re-renders because it is not a drag
+    drag = src[:src.index('addEventListener("dblclick"')]
+    assert "render()" not in drag, "a sash drag calls render(); it must not"
+    assert "requestAnimationFrame" in drag, "moves are not coalesced per frame"
+    assert "setPointerCapture" in drag, "the drag is lost when the pointer strays"

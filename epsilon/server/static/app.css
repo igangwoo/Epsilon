@@ -690,9 +690,18 @@ body.resizing { user-select: none; cursor: col-resize; }
 .pane-split.row { flex-direction: row; }
 .pane-split.col { flex-direction: column; }
 
-.pane-sash { flex: 0 0 6px; position: relative; z-index: 4; }
+/* 6px of layout, but a wider invisible grab area: a 6px target is a fussy
+   one to hit, and the extra width costs nothing because the pseudo-element
+   that shows the sash is inset back to where the eye expects it. */
+.pane-sash { flex: 0 0 6px; position: relative; z-index: 4;
+  touch-action: none; }
 .pane-sash.row { cursor: col-resize; }
 .pane-sash.col { cursor: row-resize; }
+.pane-sash::before {
+  content: ""; position: absolute;
+}
+.pane-sash.row::before { inset: 0 -4px; }
+.pane-sash.col::before { inset: -4px 0; }
 .pane-sash::after {
   content: ""; position: absolute; border-radius: 3px;
   background: transparent; transition: background var(--trans);
@@ -700,8 +709,16 @@ body.resizing { user-select: none; cursor: col-resize; }
 .pane-sash.row::after { inset: 6px 1px; }
 .pane-sash.col::after { inset: 1px 6px; }
 .pane-sash:hover::after, .pane-sash:focus-visible::after,
-body.resizing .pane-sash::after { background: var(--accent); opacity: 0.5; }
+.pane-sash.dragging::after { background: var(--accent); opacity: 0.5; }
+.pane-sash.dragging::after { opacity: 0.8; }
 .pane-sash:focus-visible { outline: none; }
+
+/* while a sash is dragging: no text selection, and the resize cursor holds
+   even as the pointer strays off the handle */
+body.resizing { user-select: none; -webkit-user-select: none; }
+body.resizing * { cursor: inherit !important; }
+body.resizing:has(.pane-sash.row.dragging) { cursor: col-resize; }
+body.resizing:has(.pane-sash.col.dragging) { cursor: row-resize; }
 
 .pane {
   flex: 1 1 0; min-width: 0; min-height: 0; display: flex;
