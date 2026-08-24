@@ -972,3 +972,16 @@ body.resizing:has(.pane-sash.col.dragging) { cursor: row-resize; }
   transition: var(--trans); }
 .console-lang:hover { background: var(--glass-hi); }
 .console-lang.py { color: var(--num); }
+
+/* ---------------- the math overlay over py/cpp source ---------------- */
+.math-overlay {
+  position: fixed; z-index: 80; max-width: min(480px, 70vw);
+  padding: 10px 12px 8px; border-radius: 12px;
+  background: var(--glass); border: 1px solid var(--glass-border);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.35);
+}
+.math-overlay.hidden { display: none; }
+.math-overlay .math-render { font-size: 18px; padding: 0 0 6px; }
+.math-overlay-actions { display: flex; gap: 6px; }

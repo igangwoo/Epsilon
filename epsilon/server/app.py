@@ -222,6 +222,12 @@ def _term_forms(env, t) -> dict:
         out["mathml"] = mathml.term_to_mathml(env, t)
     except Exception:  # noqa: BLE001
         out["mathml"] = ""
+    try:
+        import ast as _ast
+        from ..exporters.python_ast import term_to_python_ast
+        out["python"] = _ast.unparse(term_to_python_ast(env, t))
+    except Exception:  # noqa: BLE001 - not every term is runnable code
+        out["python"] = ""
     return out
 
 
@@ -260,6 +266,11 @@ class SuggestRequest(BaseModel):
 class CheckRequest(BaseModel):
     path: Optional[str] = None
     content: Optional[str] = None
+
+
+class MathifyRequest(BaseModel):
+    expr: str
+    language: str = "python"
 
 
 class RunRequest(BaseModel):
@@ -570,6 +581,24 @@ def create_app() -> FastAPI:
                     "suggestions": []}
         return {"ok": True, "goal": req.goal,
                 "suggestions": [s.as_dict() for s in found]}
+
+    @app.post("/api/mathify")
+    def mathify(req: MathifyRequest) -> dict:
+        """A Python/C++ arithmetic expression, typeset.
+
+        Reads the shared arithmetic subset into a kernel Term and renders it
+        with the same exporters everything else uses. A selection that is
+        not (only) mathematics is refused with ok=false — wrong mathematics
+        on screen would be worse than none.
+        """
+        from ..interop.mathexpr import MathExprError, parse_math_expr
+        session = repl_state["repl"].session
+        try:
+            term = parse_math_expr(req.expr)
+        except MathExprError as e:
+            return {"ok": False, "message": str(e)}
+        forms = _term_forms(session.env, term)
+        return {"ok": True, **forms}
 
     # -------------------- rendered mathematics --------------------
     @app.post("/api/render")

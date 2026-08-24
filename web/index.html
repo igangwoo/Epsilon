@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Epsilon</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c78ff'/%3E%3Ctext x='16' y='23' font-size='21' font-family='Georgia,serif' fill='white' text-anchor='middle'%3E%CE%B5%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="app.css?v=3e97dd0f6752" />
+  <link rel="stylesheet" href="app.css?v=ec8ee5ed13b5" />
   <!-- web-only overrides; app.css stays the shared source of truth -->
-  <link rel="stylesheet" href="web.css?v=3e97dd0f6752" />
-  <script src="vfs.js?v=3e97dd0f6752"></script>
+  <link rel="stylesheet" href="web.css?v=ec8ee5ed13b5" />
+  <script src="vfs.js?v=ec8ee5ed13b5"></script>
   <style>
     /* one-time boot overlay while Pyodide + the engine load */
     #boot {
@@ -294,13 +294,17 @@
 
   <div class="hover-tip hidden" id="hoverTip"></div>
 
+  <!-- typeset view of a selected Python/C++ expression (a layer over the
+       source; the source itself is never touched) -->
+  <div class="math-overlay hidden" id="mathOverlay"></div>
+
   <!-- explorer context menu -->
   <div class="ctx-menu hidden" id="ctxMenu" role="menu"></div>
 
   <!-- toasts -->
   <div class="toast-stack" id="toastStack"></div>
 
-  <script src="panes.js?v=3e97dd0f6752"></script>
-  <script src="boot.js?v=3e97dd0f6752"></script>
+  <script src="panes.js?v=ec8ee5ed13b5"></script>
+  <script src="boot.js?v=ec8ee5ed13b5"></script>
 </body>
 </html>

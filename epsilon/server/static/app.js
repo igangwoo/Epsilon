@@ -1705,6 +1705,8 @@
     { name: "Export: Markdown", kind: "export", run: () => doExport("markdown", "md") },
     { name: "Export: JSON", kind: "export", run: () => doExport("json", "json") },
     { name: "Export: Python", kind: "export", run: () => doExport("python", "py") },
+    { name: "Export: Python file into workspace (runnable)", kind: "export",
+      run: exportPythonToWorkspace },
     { name: "Export: Lean", kind: "export", run: () => doExport("lean", "lean") },
     { name: "New file", kind: "cmd", run: newFile },
     { name: "Split pane right", kind: "pane",
@@ -1787,6 +1789,29 @@
   $("#paletteOverlay").addEventListener("click", (e) => {
     if (e.target.id === "paletteOverlay") closePalette();
   });
+
+  /** Epsilon → Python → Run, inside one workspace.
+
+      The generated file lands next to the source and opens in the editor,
+      where Phase 3 makes it runnable — the whole chain (definition, proof,
+      code, execution) without leaving the IDE. Theorems arrive as comments
+      carrying their status labels; generation cannot upgrade one. */
+  async function exportPythonToWorkspace() {
+    const tab = currentTab();
+    if (!tab || !isEpsilon()) {
+      toast("Open an Epsilon file to export it as Python", "warn");
+      return;
+    }
+    await saveCurrent();
+    const r = await api("POST", "/api/export", { path: tab.path, format: "python" });
+    if (!r.ok) { toast("Export failed", "err"); return; }
+    const path = tab.path.replace(/\.epsl$/, "") + ".py";
+    const w = await api("PUT", "/api/file", { path, content: r.content });
+    if (w && w.ok === false) return;
+    await loadFiles();
+    openFile(path);
+    toast("Wrote " + path + " — press Run to execute it", "ok");
+  }
 
   async function doExport(format, ext) {
     const tab = currentTab();
@@ -2356,6 +2381,17 @@
       goToDefinition(w.word);
     });
 
+    // --- the mathematics inside Python/C++ source ---
+    // select an arithmetic expression in a py/cpp buffer and its typeset
+    // form appears beside it. Selection only, and only what parses as
+    // mathematics: wrong mathematics on screen would be worse than none.
+    editor.addEventListener("mouseup", (ev) => queueMathOverlay(ev.clientX, ev.clientY));
+    editor.addEventListener("keyup", (ev) => {
+      if (ev.shiftKey || ev.key === "Shift") queueMathOverlay();
+    });
+    ["input", "scroll", "blur"].forEach((evt) =>
+      editor.addEventListener(evt, hideMathOverlay));
+
     // --- console ---
     consoleInput.addEventListener("input", autosizeConsoleInput);
     consoleInput.addEventListener("keydown", async (ev) => {
@@ -2619,6 +2655,15 @@
         toast("LaTeX copied", "ok");
       };
       actions.appendChild(copyLatex);
+      if (first.python) {
+        const copyPy = el("button", "chip-btn", "Copy Python");
+        copyPy.title = "The result as runnable Python (math module)";
+        copyPy.onclick = () => {
+          if (navigator.clipboard) navigator.clipboard.writeText(first.python);
+          toast("Python copied", "ok");
+        };
+        actions.appendChild(copyPy);
+      }
     }
     card.appendChild(actions);
     return card;
@@ -2726,9 +2771,51 @@
     renderRunResult(tab, r);
   }
 
+  //: epsilon.plot()'s stdout marker (epsilon/plotout.py) — one series per line
+  const PLOT_MARKER = "##epsilon:plot##";
+
+  /** Lift plot-marker lines out of a run's stdout.
+
+      Returns the remaining text and the plot spec they add up to — the same
+      spec shape the `plot` command produces, so the Plot pane needs nothing
+      new to draw a Python program's data. */
+  function extractRunPlots(stdout) {
+    if (!stdout || stdout.indexOf(PLOT_MARKER) === -1) {
+      return { text: stdout, spec: null };
+    }
+    const kept = [];
+    const series = [];
+    stdout.split("\n").forEach((line) => {
+      if (!line.startsWith(PLOT_MARKER)) { kept.push(line); return; }
+      try {
+        const s = JSON.parse(line.slice(PLOT_MARKER.length));
+        series.push({ label: s.label || `series ${series.length + 1}`,
+                      x: s.x || [], y: s.y || [] });
+      } catch (e) { kept.push(line); }     // malformed: it is just output
+    });
+    if (!series.length) return { text: stdout, spec: null };
+    const xs = series.flatMap((s) => s.x).filter((v) => isFinite(v));
+    return {
+      text: kept.join("\n").replace(/\n+$/, "\n"),
+      spec: { kind: "plot2d", var: "x",
+              lo: xs.length ? Math.min(...xs) : 0,
+              hi: xs.length ? Math.max(...xs) : 1,
+              series },
+    };
+  }
+
   function renderRunResult(tab, r) {
     const out = $("#runOutput");
     out.innerHTML = "";
+    const lifted = extractRunPlots(r.stdout);
+    r = { ...r, stdout: lifted.text };
+    if (lifted.spec) {
+      renderPlots([lifted.spec]);
+      EpsilonPanes.openView("plot");
+      out.appendChild(el("div", "run-block dim",
+        `${lifted.spec.series.length} plot ` +
+        `series → Plot pane (epsilon.plot)`));
+    }
     if (r.message) out.appendChild(el("div", "run-block err", r.message));
     if (r.stdout) out.appendChild(el("pre", "run-block", r.stdout));
     if (r.stderr) out.appendChild(el("pre", "run-block err", r.stderr));
@@ -2763,6 +2850,67 @@
     if (!bar) return;
     bar.textContent = text || "";
     bar.className = "run-status" + (text ? (ok ? " ok" : " err") : "");
+  }
+
+  /* ===================================================================
+   * The mathematics inside Python/C++ source
+   * =================================================================== */
+  const mathOv = { timer: null, at: null, token: 0 };
+
+  function queueMathOverlay(x, y) {
+    clearTimeout(mathOv.timer);
+    const lang = currentLanguage();
+    if (lang !== "python" && lang !== "cpp") return hideMathOverlay();
+    const from = editor.selectionStart, to = editor.selectionEnd;
+    if (to - from < 3 || to - from > 200) return hideMathOverlay();
+    const text = editor.value.slice(from, to);
+    if (text.includes("\n")) return hideMathOverlay();
+    if (x != null) mathOv.at = { x, y };
+    mathOv.timer = setTimeout(() => showMathOverlay(text, lang), 260);
+  }
+
+  async function showMathOverlay(text, lang) {
+    const token = ++mathOv.token;
+    let r;
+    try {
+      r = await api("POST", "/api/mathify", { expr: text, language: lang });
+    } catch (e) { return; }
+    if (token !== mathOv.token || !r || !r.ok) return hideMathOverlay();
+    const box = $("#mathOverlay");
+    box.innerHTML = "";
+    const rendered = el("div", "math-render");
+    rendered.innerHTML = r.mathml || "";
+    box.appendChild(rendered);
+    const row = el("div", "math-overlay-actions");
+    const copy = el("button", "chip-btn", "Copy LaTeX");
+    copy.onmousedown = (e) => {
+      e.preventDefault();
+      if (navigator.clipboard) navigator.clipboard.writeText(r.latex || "");
+      toast("LaTeX copied", "ok");
+    };
+    row.appendChild(copy);
+    const toCas = el("button", "chip-btn", "Send to CAS");
+    toCas.onmousedown = async (e) => {
+      e.preventDefault();
+      hideMathOverlay();
+      EpsilonPanes.openView("cas");
+      await loadCasOperations();
+      $("#casExpr").value = r.source || text;   // the Epsilon reading of it
+      $("#casExpr").focus();
+    };
+    row.appendChild(toCas);
+    box.appendChild(row);
+    box.classList.remove("hidden");
+    const at = mathOv.at || { x: window.innerWidth / 2, y: 120 };
+    const rect = box.getBoundingClientRect();
+    box.style.left = Math.max(8, Math.min(at.x, window.innerWidth - rect.width - 12)) + "px";
+    box.style.top = Math.max(8, at.y - rect.height - 14) + "px";
+  }
+
+  function hideMathOverlay() {
+    clearTimeout(mathOv.timer);
+    const box = $("#mathOverlay");
+    if (box) box.classList.add("hidden");
   }
 
   /* ===================================================================

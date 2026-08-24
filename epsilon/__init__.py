@@ -30,3 +30,7 @@ BRAND = "Epsilon"
 INTERNAL_CODENAME = "PEpsilon"
 LANGUAGE_VERSION = "0.1"
 FILE_EXTENSION = ".epsl"
+
+# the one function meant for *user programs* rather than the toolchain:
+# emit a series for the IDE's plot pane (see epsilon.plotout)
+from .plotout import plot  # noqa: E402,F401

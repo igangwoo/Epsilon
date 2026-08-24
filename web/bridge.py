@@ -208,6 +208,12 @@ def _term_forms(env, t):
         out["mathml"] = mathml.term_to_mathml(env, t)
     except Exception:  # noqa: BLE001
         out["mathml"] = ""
+    try:
+        import ast as _ast
+        from epsilon.exporters.python_ast import term_to_python_ast
+        out["python"] = _ast.unparse(term_to_python_ast(env, t))
+    except Exception:  # noqa: BLE001 - not every term is runnable code
+        out["python"] = ""
     return out
 
 
@@ -344,3 +350,15 @@ def pyrepl(code, reset=False):
             err.write(_trim_traceback("<console>"))
     return json.dumps({"ok": ok, "output": out.getvalue(),
                        "error": err.getvalue()})
+
+
+def mathify(expr, language="python"):
+    """A Python/C++ arithmetic expression, typeset. Mirrors /api/mathify."""
+    from epsilon.interop.mathexpr import MathExprError, parse_math_expr
+    session = _shared_session()
+    try:
+        term = parse_math_expr(expr)
+    except MathExprError as e:
+        return json.dumps({"ok": False, "message": str(e)})
+    forms = _term_forms(session.env, term)
+    return json.dumps({"ok": True, **forms})

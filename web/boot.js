@@ -13,7 +13,7 @@
   const WHEEL = "./epsilon_math-0.1.0-py3-none-any.whl";
   //!BUILD_ID — stamped by scripts/build_web.py from the asset contents,
   // so a fresh page can never pick up a stale cached script
-  const BUILD_ID = "3e97dd0f6752";
+  const BUILD_ID = "ec8ee5ed13b5";
   const CACHE_BUST = "?v=" + BUILD_ID;
 
   const realFetch = window.fetch.bind(window);
@@ -116,6 +116,13 @@ plot Real.sin, x ∈ [-6, 6]
       PY.globals.set("_rst", !!body.reset);
       return jsonResponse(JSON.parse(PY.runPython(
         "import bridge; bridge.pyrepl(_code, _rst)")));
+    }
+
+    if (path === "/api/mathify") {
+      PY.globals.set("_x", body.expr || "");
+      PY.globals.set("_lang", body.language || "python");
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.mathify(_x, _lang)")));
     }
 
     if (path === "/api/suggest") {

@@ -104,6 +104,10 @@ and engine side.
 | Proof explorer (Phase 2) | done — goal context, per-goal suggestions, free-form goal exploration |
 | Python runtime + console (Phase 3) | done — /api/run, persistent py> console, run panel, traceback→gutter |
 | C++ compile + run (Phase 3) | done server-side (g++/clang++); browser build refuses honestly |
+| Python ↔ Graph (Phase 4) | done — epsilon.plot() → Plot pane via stdout markers |
+| Math overlay on Python/C++ (Phase 4) | done — select an expression, see it typeset; Copy LaTeX / Send to CAS |
+| Epsilon → Python → Run (Phase 4) | done — export writes a runnable workspace file |
+| CAS ↔ Python (Phase 4) | done — every CAS result carries a runnable Python form |
 | Data viewer, algorithm workspace | pending |
 
 Mathematical status labels stay exactly as the engine reports them:

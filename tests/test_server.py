@@ -429,3 +429,38 @@ def test_code_execution_allows_the_ide_itself(client):
                     json={"language": "python", "code": "print(1)"},
                     headers={"Origin": "http://testserver"})
     assert r.status_code == 200
+
+
+# --------------------------------------------------------------------------
+# cross-pane integration (phase 4)
+# --------------------------------------------------------------------------
+
+def test_mathify_typesets_python_arithmetic(client):
+    r = client.post("/api/mathify", json={"expr": "math.sin(x)/x"}).json()
+    assert r["ok"] is True
+    assert r["latex"] == "\\frac{\\sin\\!\\left(x\\right)}{x}"
+    assert r["mathml"].startswith("<math")
+    assert r["source"] == "Real.sin x / x"     # the Epsilon reading, for CAS
+
+
+def test_mathify_refuses_non_mathematics(client):
+    r = client.post("/api/mathify", json={"expr": "print(1)"}).json()
+    assert r["ok"] is False and r["message"]
+
+
+def test_cas_results_carry_runnable_python(client):
+    r = client.post("/api/cas", json={"op": "derivative",
+                                      "expr": "x^3 + Real.sin(x)"}).json()
+    assert r["result"]["python"] == "3 * x ** 2 + math.cos(x)"
+
+
+def test_exported_python_actually_runs(client):
+    """Epsilon → Python → Run: the generated file must execute."""
+    client.put("/api/file", json={
+        "path": "sq.epsl", "content": "def sq (x : Real) : Real := x * x"})
+    code = client.post("/api/export",
+                       json={"path": "sq.epsl", "format": "python"}).json()["content"]
+    r = client.post("/api/run", json={
+        "language": "python", "code": code + "\nprint(sq(7))"}).json()
+    assert r["ok"] is True, r["stderr"]
+    assert r["stdout"].strip() == "49"

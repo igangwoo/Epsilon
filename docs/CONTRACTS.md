@@ -197,6 +197,13 @@ POST /api/pyrepl {code, reset?} -> {"ok", "output", "error", "reset"?}
     it lives in a child process - a runaway input kills and respawns it and
     the reply says the session was reset. Same-origin only, as /api/run.)
 
+POST /api/mathify {expr, language?} -> {"ok", "source", "latex", "mathml",
+                                        "python"} | {"ok": false, "message"}
+   (a Python/C++ arithmetic expression read into a kernel Term and typeset.
+    Only the shared arithmetic subset; anything else is refused - wrong
+    mathematics on screen would be worse than none. `source` is the Epsilon
+    reading, which the CAS pane accepts directly.)
+
 POST /api/eval {code}          -> {"ok", "output": str, "diagnostics": [...]}
    (persistent REPL session; `code` is one or more commands OR a bare
     expression - try commands first, fall back to wrapping in #eval)
@@ -329,6 +336,27 @@ available_languages() -> {"python": bool, "cpp": bool}   # the truth only
 #   protocol on stdout (user output is captured, so it cannot corrupt it),
 #   kill-and-respawn on a runaway input.
 ```
+
+## Cross-pane data model (section 35 / phase 4)
+
+Panes talk through documented spec shapes, never through each other's DOM:
+
+* **plot spec** `{kind, var, lo, hi, series: [{label, x, y}]}` - produced by
+  the `plot` command (graphing), by `epsilon.plot()` in a running Python
+  program (stdout marker `##epsilon:plot##{json}`, one series per line,
+  lifted out of the run output by the run panel), and consumed by the one
+  plot renderer.
+* **diagnostics** `{severity, message, span, module}` - produced by the
+  Epsilon checker, the C++ compiler and Python tracebacks alike; consumed by
+  the gutter and the Problems panel.
+* **term forms** `{source, latex, mathml, python}` - one term in every form
+  a pane needs: `source` is valid Epsilon (CAS input, editor insertion),
+  `latex`/`mathml` are display, `python` is runnable (math backend).
+  Produced by /api/cas, /api/render, /api/mathify.
+
+`epsilon.plot(x, y=None, *, label="")` lives in the installed package, so a
+program using it runs identically inside the IDE (server subprocess or
+Pyodide) and outside it - outside, the markers are just lines on stdout.
 
 ## Proof explorer - `epsilon/suggest.py`
 
