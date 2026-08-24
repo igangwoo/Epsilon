@@ -187,9 +187,12 @@ _PRELUDE_FUNC_ALIAS = {
 }
 
 #: prelude.epsl's unicode type/constant aliases (`def ℝ := Real`, etc.) ->
-#: the same rendering as their canonical Const name.
+#: the same rendering as their canonical Const name. The blackboard-bold
+#: characters are emitted literally: `mathvariant="double-struck"` is
+#: deprecated in MathML Core and browsers render it inconsistently, whereas
+#: U+211D and friends are just characters and always come out right.
 _PRELUDE_CONST_ALIAS = {
-    "ℕ": "N", "ℤ": "Z", "ℚ": "Q", "ℝ": "R", "ℂ": "C",
+    "ℕ": "ℕ", "ℤ": "ℤ", "ℚ": "ℚ", "ℝ": "ℝ", "ℂ": "ℂ",
 }
 
 
@@ -250,11 +253,10 @@ def _to_mml(env: Environment, t: Term, prec: int,
         if t.name == "Real.euler":
             return _mi("e")
         if t.name in ("Nat", "Int", "Rat", "Real", "Complex"):
-            letter = {"Nat": "N", "Int": "Z", "Rat": "Q", "Real": "R",
-                     "Complex": "C"}[t.name]
-            return _mi(letter, mathvariant="double-struck")
+            return _mi({"Nat": "ℕ", "Int": "ℤ", "Rat": "ℚ", "Real": "ℝ",
+                        "Complex": "ℂ"}[t.name])
         if t.name in _PRELUDE_CONST_ALIAS:
-            return _mi(_PRELUDE_CONST_ALIAS[t.name], mathvariant="double-struck")
+            return _mi(_PRELUDE_CONST_ALIAS[t.name])
         if t.name in ("True", "False", "⊤", "⊥"):
             word = {"⊤": "True", "⊥": "False"}.get(t.name, t.name)
             return _mi(word)
@@ -352,8 +354,14 @@ def _to_mml(env: Environment, t: Term, prec: int,
                 sym, p, assoc = INFIX_MML[n]
                 lp = p if assoc == "left" else p + 1
                 rp = p + 1 if assoc in ("left", "none") else p
+                right = args[1]
+                # `a + -1` is written `a - 1` in mathematics
+                if sym in ("+", "-") and isinstance(right, Lit) \
+                        and right.value < 0:
+                    sym = "-" if sym == "+" else "+"
+                    right = Lit(-right.value, right.tyname)
                 lhs = _to_mml(env, args[0], lp, names)
-                rhs = _to_mml(env, args[1], rp, names)
+                rhs = _to_mml(env, right, rp, names)
                 return _group(p < prec, lhs, _mo(sym), rhs)
         hs = _head_ident(head, names)
         if hs is None:

@@ -210,6 +210,39 @@
       </div>
     </div>
     <div class="view-scroll" id="outputPanel"></div>
+    <div class="view-render" id="renderPanel">
+      <div class="render-bar">
+        <span class="render-title">Rendered mathematics</span>
+        <label class="render-toggle"><input type="checkbox" id="renderShowSource" />
+          show source</label>
+        <span class="render-spacer"></span>
+        <button class="chip-btn" id="renderRefresh" title="Re-render">⟳</button>
+        <button class="chip-btn" id="renderCopyLatex">Copy LaTeX</button>
+      </div>
+      <div class="render-body" id="renderBody">
+        <div class="empty-hint">Check an Epsilon file to see it typeset.</div>
+      </div>
+    </div>
+    <div class="view-cas" id="casPanel">
+      <div class="cas-bar">
+        <select class="cas-op" id="casOp" aria-label="Operation"></select>
+        <input class="cas-expr" id="casExpr" spellcheck="false"
+          autocomplete="off" placeholder="an expression, e.g. (x + 1) * (x - 1)" />
+        <input class="cas-var" id="casVar" spellcheck="false"
+          autocomplete="off" placeholder="x" aria-label="Variable" />
+        <input class="cas-point" id="casPoint" spellcheck="false"
+          autocomplete="off" placeholder="0" aria-label="Point" />
+        <input class="cas-order" id="casOrder" type="number" min="1" max="12"
+          value="5" aria-label="Order" />
+        <button class="btn cas-run" id="casRun">Compute</button>
+      </div>
+      <div class="cas-hint" id="casHint"></div>
+      <div class="cas-results" id="casResults">
+        <div class="empty-hint">A CAS result is <b>Symbolically Verified</b>,
+          never a formal proof — the kernel is not involved. Proofs come from
+          the editor.</div>
+      </div>
+    </div>
   </div>
 
   <div class="hover-tip hidden" id="hoverTip"></div>

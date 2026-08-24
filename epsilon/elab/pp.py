@@ -84,7 +84,15 @@ def _pp(env: Environment, t: Term, prec: int, names: list[str]) -> str:
                 if len(args) == 2:
                     lp = p if assoc == "left" else p + 1
                     rp = p + 1 if assoc in ("left", "none") else p
-                    s = f"{_pp(env, args[0], lp, names)} {sym} {_pp(env, args[1], rp, names)}"
+                    right = args[1]
+                    # `a + -1` reads as `a - 1`; the CAS produces the former
+                    # constantly, and nobody writes mathematics that way
+                    if sym in ("+", "-") and isinstance(right, Lit) \
+                            and right.value < 0:
+                        sym = "-" if sym == "+" else "+"
+                        right = Lit(-right.value, right.tyname)
+                    s = (f"{_pp(env, args[0], lp, names)} {sym} "
+                         f"{_pp(env, right, rp, names)}")
                     return _paren(s, p < prec)
             # Eq / Ne with implicit type arg
             if n == "Eq" and len(args) == 3:

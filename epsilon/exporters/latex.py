@@ -384,8 +384,14 @@ def _to_latex(env: Environment, t: Term, prec: int, names: list[str]) -> str:
                 sym, p, assoc = INFIX_LATEX[n]
                 lp = p if assoc == "left" else p + 1
                 rp = p + 1 if assoc in ("left", "none") else p
+                right = args[1]
+                # `a + -1` is written `a - 1` in mathematics
+                if sym in ("+", "-") and isinstance(right, Lit) \
+                        and right.value < 0:
+                    sym = "-" if sym == "+" else "+"
+                    right = Lit(-right.value, right.tyname)
                 s = (f"{_to_latex(env, args[0], lp, names)} {sym} "
-                     f"{_to_latex(env, args[1], rp, names)}")
+                     f"{_to_latex(env, right, rp, names)}")
                 return _paren(s, p < prec)
         hs = _head_ident(head, names)
         if hs is None:

@@ -856,6 +856,7 @@
     renderDeps(r.deps || { nodes: [], edges: [] });
     setCheckState(r.ok ? "ok" : "error");
     updateStatusCounts(r.theorems || []);
+    if (EpsilonPanes.isOpen("render")) refreshRender();
   }
 
   const LANGUAGE_LABEL = {
@@ -1612,6 +1613,7 @@
     ["editor", "Editor"], ["proof", "Proof"], ["plot", "Plot"],
     ["inspector", "Inspector"], ["problems", "Problems"],
     ["console", "Console"], ["output", "Output"],
+    ["cas", "CAS"], ["render", "Rendered mathematics"],
     ["deps", "Dependency graph"],
   ].map(([id, label]) => ({
     name: "Open: " + label, kind: "view", run: () => openPaneView(id),
@@ -2261,6 +2263,266 @@
 
 
   /* ===================================================================
+   * Rendered mathematics pane
+   *
+   * The same declarations the kernel checked, typeset. MathML, which the
+   * browser draws itself — the IDE ships no typesetting library. The source
+   * is never rewritten to make a rendering work; this is a layer over it,
+   * and each block keeps the status the engine reported.
+   * =================================================================== */
+  const render = { blocks: [], latex: "", showSource: false, busy: false };
+
+  async function refreshRender() {
+    const tab = currentTab();
+    const body = $("#renderBody");
+    if (!body) return;
+    if (!tab || !isEpsilon()) {
+      body.innerHTML = "";
+      body.appendChild(el("div", "empty-hint",
+        "Open an Epsilon file to see it typeset."));
+      return;
+    }
+    if (render.busy) return;
+    render.busy = true;
+    let r;
+    try {
+      r = await api("POST", "/api/render", { path: tab.path, content: tab.content });
+    } finally {
+      render.busy = false;
+    }
+    render.blocks = (r && r.blocks) || [];
+    render.latex = (r && r.document_latex) || "";
+    renderRendered(r && r.diagnostics);
+  }
+
+  function renderRendered(diagnostics) {
+    const body = $("#renderBody");
+    if (!body) return;
+    body.innerHTML = "";
+
+    if (!render.blocks.length) {
+      const why = (diagnostics || []).find((d) => d.severity === "error");
+      body.appendChild(el("div", "empty-hint", why
+        ? "Nothing to render yet — the file has an error: " + why.message
+        : "No definitions or theorems in this file yet."));
+      return;
+    }
+
+    render.blocks.forEach((b) => {
+      const card = el("div", "render-block");
+
+      const head = el("div", "render-head");
+      head.appendChild(el("span", "render-kind", b.kind));
+      head.appendChild(el("span", "render-name", b.title || b.name));
+      if (b.display_name && b.display_name !== b.name)
+        head.appendChild(el("code", "render-ident", b.name));
+      if (b.status_label)
+        head.appendChild(el("span", "status-chip " + b.status, b.status_label));
+      head.onclick = () => { if (b.span && b.span[0]) gotoSpan(b.span); };
+      head.title = "Go to the source";
+      card.appendChild(head);
+
+      if (b.doc) card.appendChild(el("div", "render-doc", b.doc));
+
+      card.appendChild(renderMath(b.type, b.statement));
+      if (b.value) card.appendChild(renderMath(b.value, null, "definition"));
+
+      if (b.axioms && b.axioms.length) {
+        card.appendChild(el("div", "render-axioms",
+          "depends on: " + b.axioms.join(", ")));
+      }
+      body.appendChild(card);
+    });
+  }
+
+  function renderMath(forms, sourceText, cls) {
+    const wrap = el("div", "render-math" + (cls ? " " + cls : ""));
+    if (forms && forms.mathml) {
+      const m = el("div", "math-render");
+      m.innerHTML = forms.mathml;
+      wrap.appendChild(m);
+    }
+    if (render.showSource) {
+      const src = sourceText || (forms && forms.latex) || "";
+      if (src) wrap.appendChild(el("code", "render-source", src));
+    }
+    return wrap;
+  }
+
+  /* ===================================================================
+   * CAS pane
+   *
+   * Computer algebra, kept visibly separate from proof. Every result is
+   * labelled with the status the engine reports, and the label for a CAS
+   * answer is "Symbolically Verified" — never "Formally Proven". The two
+   * are different claims and the IDE never blurs them.
+   * =================================================================== */
+  const cas = { ops: [], history: [], busy: false };
+
+  async function loadCasOperations() {
+    if (cas.ops.length) return cas.ops;
+    const r = await api("GET", "/api/cas/operations");
+    cas.ops = r.operations || [];
+    const select = $("#casOp");
+    if (select) {
+      select.innerHTML = "";
+      cas.ops.forEach((o) => {
+        const opt = el("option", null, o.label);
+        opt.value = o.op;
+        opt.title = o.description;
+        select.appendChild(opt);
+      });
+      select.onchange = syncCasFields;
+    }
+    syncCasFields();
+    return cas.ops;
+  }
+
+  /** Only show the inputs the chosen operation actually reads. */
+  function syncCasFields() {
+    const op = $("#casOp") && $("#casOp").value;
+    const spec = cas.ops.find((o) => o.op === op);
+    const wantsPoint = op === "limit" || op === "taylor" || op === "evaluate";
+    const wantsOrder = op === "taylor";
+    const wantsVar = spec ? spec.needs_variable : false;
+    const show = (sel, on) => {
+      const e = $(sel);
+      if (e) e.classList.toggle("hidden", !on);
+    };
+    show("#casVar", wantsVar);
+    show("#casPoint", wantsPoint);
+    show("#casOrder", wantsOrder);
+    const hint = $("#casHint");
+    if (hint) hint.textContent = spec ? spec.description : "";
+    const point = $("#casPoint");
+    if (point) {
+      point.placeholder = op === "evaluate" ? "value of the variable" : "0";
+    }
+  }
+
+  async function runCas() {
+    if (cas.busy) return;
+    const expr = ($("#casExpr").value || "").trim();
+    if (!expr) return;
+    const op = $("#casOp").value;
+    cas.busy = true;
+    $("#casRun").classList.add("running");
+    let r;
+    try {
+      r = await api("POST", "/api/cas", {
+        op,
+        expr,
+        variable: ($("#casVar").value || "").trim() || null,
+        point: ($("#casPoint").value || "").trim() || "0",
+        order: Number($("#casOrder").value) || 5,
+      });
+    } finally {
+      cas.busy = false;
+      $("#casRun").classList.remove("running");
+    }
+    cas.history.unshift({ expr, ...r });
+    renderCas();
+  }
+
+  function renderCas() {
+    const panel = $("#casResults");
+    if (!panel) return;
+    panel.innerHTML = "";
+    if (!cas.history.length) {
+      panel.appendChild(el("div", "empty-hint",
+        "A CAS result is Symbolically Verified, never a formal proof."));
+      return;
+    }
+    cas.history.forEach((h, idx) => panel.appendChild(casCard(h, idx)));
+  }
+
+  function casCard(h, idx) {
+    const card = el("div", "cas-card" + (h.ok ? "" : " failed"));
+
+    const head = el("div", "cas-card-head");
+    head.appendChild(el("span", "cas-op-label", h.label || h.op));
+    if (h.ok) {
+      const chip = el("span", "status-chip " + h.status, h.status_label);
+      chip.title = "Computer algebra, not a kernel proof";
+      head.appendChild(chip);
+    }
+    const drop = el("button", "mini-btn", "×");
+    drop.title = "Remove";
+    drop.onclick = () => { cas.history.splice(idx, 1); renderCas(); };
+    head.appendChild(drop);
+    card.appendChild(head);
+
+    card.appendChild(mathRow("input", h.expr, h.input));
+
+    if (!h.ok) {
+      card.appendChild(el("div", "cas-error", h.message || "failed"));
+      return card;
+    }
+
+    if (h.result) card.appendChild(mathRow("result", null, h.result));
+    (h.results || []).forEach((t, i) =>
+      card.appendChild(mathRow(`solution ${i + 1}`, null, t)));
+    if (h.note) card.appendChild(el("div", "cas-note", h.note));
+
+    const actions = el("div", "cas-actions");
+    const first = h.result || (h.results || [])[0];
+    if (first) {
+      const insert = el("button", "chip-btn", "Insert in editor");
+      insert.onclick = () => insertAtCaret(first.source);
+      actions.appendChild(insert);
+      const copyLatex = el("button", "chip-btn", "Copy LaTeX");
+      copyLatex.onclick = () => {
+        if (navigator.clipboard) navigator.clipboard.writeText(first.latex || "");
+        toast("LaTeX copied", "ok");
+      };
+      actions.appendChild(copyLatex);
+    }
+    card.appendChild(actions);
+    return card;
+  }
+
+  /**
+   * A term shown as rendered mathematics with its Epsilon source beneath.
+   * Rendering is MathML, which browsers draw natively — the IDE ships no
+   * external typesetting library, and the source is never rewritten to make
+   * the rendering work.
+   */
+  function mathRow(label, fallbackSource, forms) {
+    const row = el("div", "cas-row");
+    row.appendChild(el("span", "cas-row-label", label));
+    const body = el("div", "cas-row-body");
+    if (forms && forms.mathml) {
+      const rendered = el("div", "math-render");
+      rendered.innerHTML = forms.mathml;
+      body.appendChild(rendered);
+    }
+    const src = (forms && forms.source) || fallbackSource || "";
+    if (src) body.appendChild(el("code", "cas-source", src));
+    row.appendChild(body);
+    return row;
+  }
+
+  /** Paste text at the editor caret, the way a result should come back. */
+  function insertAtCaret(text) {
+    if (!text) return;
+    EpsilonPanes.openView("editor");
+    const start = editor.selectionStart;
+    const end = editor.selectionEnd;
+    editor.value = editor.value.slice(0, start) + text + editor.value.slice(end);
+    editor.selectionStart = editor.selectionEnd = start + text.length;
+    editor.focus();
+    const tab = currentTab();
+    if (tab) {
+      tab.content = editor.value;
+      tab.dirty = tab.content !== tab.saved;
+      renderTabs();
+    }
+    renderEditor();
+    updateCaret();
+    scheduleCheck();
+  }
+
+  /* ===================================================================
    * Pane workspace
    *
    * Every tool is a view in the shared pane system rather than a panel
@@ -2277,6 +2539,10 @@
     { id: "problems",  title: "Problems",   icon: "⚠", element: "#problemsPanel" },
     { id: "console",   title: "Console",    icon: "›", element: "#consolePanel" },
     { id: "output",    title: "Output",     icon: "⎙", element: "#outputPanel" },
+    { id: "render",    title: "Rendered",   icon: "𝛴", element: "#renderPanel",
+      onShow: () => refreshRender() },
+    { id: "cas",       title: "CAS",        icon: "∫", element: "#casPanel",
+      onShow: () => { loadCasOperations(); } },
     { id: "deps",      title: "Dependencies", icon: "◇", element: "#viewDeps",
       onShow: () => {
         graphSim.alpha = Math.max(graphSim.alpha, 0.9);
@@ -2320,6 +2586,19 @@
       persistCollapsed();
       renderFileList();
     };
+    $("#renderRefresh").onclick = refreshRender;
+    $("#renderShowSource").onchange = (e) => {
+      render.showSource = e.target.checked;
+      renderRendered();
+    };
+    $("#renderCopyLatex").onclick = () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(render.latex || "");
+      toast("LaTeX document copied", "ok");
+    };
+    $("#casRun").onclick = runCas;
+    $("#casExpr").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); runCas(); }
+    });
     $("#fileFilter").oninput = (e) => {
       state.fileFilter = e.target.value;
       renderFileList();

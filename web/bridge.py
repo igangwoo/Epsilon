@@ -157,3 +157,66 @@ def completions(prefix=""):
                                   "display_name": i.get("display_name"),
                                   "title": i.get("title") or i["name"]}
                                  for i in items]})
+
+
+def cas_operations():
+    from epsilon.cas.workbench import OPERATIONS
+    return json.dumps({"operations": [
+        {"op": op, "label": label, "needs_variable": needs_var,
+         "description": desc}
+        for op, (label, needs_var, desc) in OPERATIONS.items()]})
+
+
+def cas(op, expr, variable=None, point="0", order=5):
+    """One CAS operation, reported with its verification status.
+
+    Mirrors the server's /api/cas. A CAS answer is `symbolic`, a sampled
+    value is `numeric`; the kernel is not involved, so neither is `proven`.
+    """
+    from epsilon.cas.workbench import OPERATIONS, run
+    from epsilon.project import STATUS_LABELS
+    session = _shared_session()
+    try:
+        r = run(session, op, expr, variable=variable or None,
+                point=point or "0", order=int(order or 5))
+    except Exception as e:  # noqa: BLE001 - never raise into the browser
+        label = OPERATIONS.get(op, (op, False, ""))[0]
+        return json.dumps({"ok": False, "op": op, "label": label,
+                           "message": str(e)})
+
+    label, _, description = OPERATIONS[r.op]
+    return json.dumps({
+        "ok": True, "op": r.op, "label": label, "description": description,
+        "variable": r.variable, "status": r.status,
+        "status_label": STATUS_LABELS[r.status], "note": r.note,
+        "input": _term_forms(session.env, r.input),
+        "result": _term_forms(session.env, r.result) if r.result is not None else None,
+        "results": [_term_forms(session.env, t) for t in r.results],
+    })
+
+
+def _term_forms(env, t):
+    """One term as Epsilon source, LaTeX and MathML. Source stays canonical."""
+    from epsilon.elab.pp import pp
+    from epsilon.exporters import latex, mathml
+    out = {"source": pp(env, t)}
+    try:
+        out["latex"] = latex.term_to_latex(env, t)
+    except Exception:  # noqa: BLE001 - display is best-effort
+        out["latex"] = ""
+    try:
+        out["mathml"] = mathml.term_to_mathml(env, t)
+    except Exception:  # noqa: BLE001
+        out["mathml"] = ""
+    return out
+
+
+def render(content, module="main"):
+    """The module's declarations as typeset mathematics. Mirrors /api/render."""
+    from epsilon.exporters.render import render_module
+    session = Session()
+    result = session.check_source(content, module)
+    out = render_module(session, module)
+    out["ok"] = result.ok
+    out["diagnostics"] = [_diag(d) for d in result.diagnostics]
+    return json.dumps(out)

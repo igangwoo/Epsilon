@@ -205,6 +205,26 @@ def _build_check_response(session: Session, module: str) -> dict:
     }
 
 
+def _term_forms(env, t) -> dict:
+    """One term in every form the front end needs.
+
+    `source` is valid Epsilon that can be pasted back into a file; `latex`
+    and `mathml` are for display only. Rendering never replaces the source.
+    """
+    from ..elab.pp import pp
+    from ..exporters import latex, mathml
+    out = {"source": pp(env, t)}
+    try:
+        out["latex"] = latex.term_to_latex(env, t)
+    except Exception:  # noqa: BLE001 - display is best-effort
+        out["latex"] = ""
+    try:
+        out["mathml"] = mathml.term_to_mathml(env, t)
+    except Exception:  # noqa: BLE001
+        out["mathml"] = ""
+    return out
+
+
 # ---------------------------------------------------------------------------
 # request models
 # ---------------------------------------------------------------------------
@@ -221,6 +241,14 @@ class FileMove(BaseModel):
 
 class FilePath(BaseModel):
     path: str
+
+
+class CASRequest(BaseModel):
+    op: str
+    expr: str
+    variable: Optional[str] = None
+    point: str = "0"
+    order: int = 5
 
 
 class CheckRequest(BaseModel):
@@ -403,6 +431,79 @@ def create_app() -> FastAPI:
         return {"ok": True, "output": output, "diagnostics": []}
 
     # -------------------- export --------------------
+    # -------------------- computer algebra --------------------
+    @app.get("/api/cas/operations")
+    def cas_operations() -> dict:
+        from ..cas.workbench import OPERATIONS
+        return {"operations": [
+            {"op": op, "label": label, "needs_variable": needs_var,
+             "description": desc}
+            for op, (label, needs_var, desc) in OPERATIONS.items()]}
+
+    @app.post("/api/cas")
+    def cas(req: CASRequest) -> dict:
+        """Run one CAS operation and report it with its verification status.
+
+        A CAS answer is `symbolic` and a sampled value is `numeric`. Neither
+        is `proven`: the kernel is not involved here, and the IDE must never
+        show an algebra result as a formal proof.
+        """
+        from ..cas.workbench import OPERATIONS, run
+        session = repl_state["repl"].session
+        try:
+            r = run(session, req.op, req.expr, variable=req.variable,
+                    point=req.point, order=req.order)
+        except Exception as e:  # noqa: BLE001 - user input never 500s
+            label = OPERATIONS.get(req.op, (req.op, False, ""))[0]
+            return {"ok": False, "op": req.op, "label": label,
+                    "message": str(e)}
+
+        label, _, description = OPERATIONS[r.op]
+        return {
+            "ok": True,
+            "op": r.op,
+            "label": label,
+            "description": description,
+            "variable": r.variable,
+            "status": r.status,
+            "status_label": STATUS_LABELS[r.status],
+            "note": r.note,
+            "input": _term_forms(session.env, r.input),
+            "result": _term_forms(session.env, r.result) if r.result is not None else None,
+            "results": [_term_forms(session.env, t) for t in r.results],
+        }
+
+    # -------------------- rendered mathematics --------------------
+    @app.post("/api/render")
+    def render(req: CheckRequest) -> dict:
+        """The current file's declarations as typeset mathematics.
+
+        The source is never rewritten to make this render; it is a separate
+        layer over the same declarations the kernel checked, and every block
+        carries the status the engine reports.
+        """
+        from ..exporters.render import render_module
+        module = "main"
+        if req.content is not None:
+            content = req.content
+            if req.path:
+                module = os.path.splitext(os.path.basename(req.path))[0]
+        else:
+            _ensure_welcome()
+            path = req.path or "main.epsl"
+            full = _safe_path(path)
+            if not os.path.isfile(full):
+                raise HTTPException(status_code=404, detail="not found")
+            module = os.path.splitext(os.path.basename(path))[0]
+            with open(full, encoding="utf-8") as fh:
+                content = fh.read()
+        session = Session()
+        result = session.check_source(content, module)
+        out = render_module(session, module)
+        out["ok"] = result.ok
+        out["diagnostics"] = [_diag_dict(d) for d in result.diagnostics]
+        return out
+
     @app.post("/api/export")
     def export(req: ExportRequest) -> dict:
         session = Session()

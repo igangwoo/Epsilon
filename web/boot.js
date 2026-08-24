@@ -91,6 +91,15 @@ plot Real.sin, x ∈ [-6, 6]
       return jsonResponse(JSON.parse(out));
     }
 
+    if (path === "/api/render") {
+      const content = body.content != null ? body.content : (FILES[body.path] || "");
+      const module = (body.path || "main").split("/").pop().replace(/\.epsl$/, "");
+      PY.globals.set("_c", content);
+      PY.globals.set("_m", module);
+      return jsonResponse(JSON.parse(
+        PY.runPython("import bridge; bridge.render(_c, _m)")));
+    }
+
     if (path === "/api/export") {
       const content = body.content != null ? body.content : (FILES[body.path] || "");
       const module = (body.path || "main").split("/").pop().replace(/\.epsl$/, "");
@@ -99,6 +108,21 @@ plot Real.sin, x ∈ [-6, 6]
       PY.globals.set("_m", module);
       const out = PY.runPython("import bridge; bridge.export(_c, _f, _m)");
       return jsonResponse(JSON.parse(out));
+    }
+
+    if (path === "/api/cas/operations") {
+      return jsonResponse(JSON.parse(
+        PY.runPython("import bridge; bridge.cas_operations()")));
+    }
+
+    if (path === "/api/cas") {
+      PY.globals.set("_op", body.op || "");
+      PY.globals.set("_x", body.expr || "");
+      PY.globals.set("_v", body.variable || "");
+      PY.globals.set("_pt", body.point || "0");
+      PY.globals.set("_ord", body.order == null ? 5 : body.order);
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.cas(_op, _x, _v, _pt, _ord)")));
     }
 
     if (path === "/api/completions") {

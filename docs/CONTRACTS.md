@@ -45,6 +45,22 @@ t = el.finalize(t)
 
 ## CAS - `epsilon/cas/`
 
+`epsilon/cas/workbench.py` is the CAS as a service: source text in, a named
+operation, and a result carrying its verification status.
+```python
+OPERATIONS  # op -> (label, needs_variable, description)
+run(session, op, src, *, variable=None, point="0", order=5) -> CASResult
+#   CASResult: op, status ("symbolic"|"numeric"), input, result, results,
+#              variable, note.  Raises CASRequestError - which the endpoints
+#              turn into ok=false + message - rather than returning a value
+#              the CAS cannot justify.
+parse_term(session, src, variables=None) -> (Term, [variable names])
+#   free identifiers become Real variables, in source order
+```
+A CAS answer is `symbolic` and a sampled value is `numeric`. Neither is ever
+`proven`: the kernel is not involved, and no code path from the CAS reaches
+a formal-proof label.
+
 ```python
 # engine.py
 simplify(env, t: Term) -> Term            # algebraic normal form
@@ -98,6 +114,17 @@ render_svg(spec: dict, width=800, height=500, dark=False) -> str  # standalone S
 ```
 
 ## Exporters - `epsilon/exporters/`
+
+```python
+render.render_module(session, module=None) -> {"blocks": [...],
+                                               "document_latex": str}
+#  every declaration of the module, in source order, as LaTeX + MathML with
+#  the status the engine reported. Feeds /api/render and the IDE's rendered-
+#  mathematics pane. Rendering never rewrites the source it renders.
+```
+MathML emits blackboard-bold characters literally (ℝ, not
+`mathvariant="double-struck"`, which MathML Core deprecates and browsers
+honour inconsistently).
 
 ```python
 latex.term_to_latex(env, t: Term) -> str         # \frac, ^, \sin, \forall ...
@@ -158,6 +185,29 @@ POST /api/eval {code}          -> {"ok", "output": str, "diagnostics": [...]}
     expression - try commands first, fall back to wrapping in #eval)
 POST /api/export {path?, format: "latex"|"markdown"|"json"|"python"|
                   "python-numpy"|"mathml"|"svg-plots"} -> {"ok","content": str}
+POST /api/cas {op, expr, variable?, point?, order?} -> {
+  "ok": bool, "op", "label", "description", "variable",
+  "status": "symbolic"|"numeric",        # NEVER "proven" - see below
+  "status_label", "note",
+  "input":   {"source","latex","mathml"},
+  "result":  {...} | null,
+  "results": [{...}]                     # solve returns every root
+}
+   (a refusal is 200 with ok=false and a `message`: bad input, or an
+    operation the CAS cannot carry out. It says so rather than guessing.)
+GET  /api/cas/operations       -> {"operations":[{"op","label",
+                                    "needs_variable","description"}]}
+
+POST /api/render {path?, content?} -> {
+  "ok", "diagnostics": [...],
+  "blocks": [{"name","display_name","title","kind","status","status_label",
+              "doc","span","statement","axioms",
+              "type":  {"latex","mathml"},
+              "value": {"latex","mathml"}   # definitions only, not proofs
+             }],                            # source order
+  "document_latex": str
+}
+
 GET  /api/completions?prefix=  -> {"items":[{"name","kind","type",
                                     "display_name","title"}]}
 GET  /api/hover?name=          -> {"info": intelligence.hover(...) | null}

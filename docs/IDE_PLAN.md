@@ -99,7 +99,10 @@ and engine side.
 | Universal editor (Phase 1) | done — Epsilon, Python, C++, Markdown, JSON/YAML/TOML, LaTeX, JS, shell |
 | File explorer (Phase 1) | done — folder tree, rename, duplicate, delete, drag-to-move, type icons, filter |
 | Pane system (Phase 1) | done — split/tab/move/maximize, saved layouts, 4 profiles |
-| CAS pane, LaTeX preview, Python, C++, data, algorithm | pending |
+| CAS pane (Phase 2) | done — 9 operations, MathML results, insert into editor, status-labelled |
+| Rendered mathematics (Phase 2) | done — MathML typesetting of the checked file, LaTeX export |
+| Proof explorer (Phase 2) | pending |
+| Python, C++, data, algorithm panes | pending |
 
 Mathematical status labels stay exactly as the engine reports them:
 `✓ Formally Proven`, `✓ Symbolically Verified`, `≈ Numerically Verified`,

@@ -239,3 +239,103 @@ def test_hidden_and_cache_paths_are_not_listed(client):
     paths = {e["path"] for e in client.get("/api/files").json()["entries"]}
     assert not any(p.startswith("__pycache__") for p in paths)
     assert ".secret" not in paths
+
+
+# --------------------------------------------------------------------------
+# computer algebra
+# --------------------------------------------------------------------------
+
+def test_cas_operations_are_listed(client):
+    ops = client.get("/api/cas/operations").json()["operations"]
+    names = {o["op"] for o in ops}
+    assert {"simplify", "expand", "derivative", "integral", "limit",
+            "solve", "evaluate"} <= names
+    assert all(o["label"] and o["description"] for o in ops)
+
+
+def test_cas_expand(client):
+    r = client.post("/api/cas", json={"op": "expand",
+                                      "expr": "(x + 1) * (x - 1)"}).json()
+    assert r["ok"] is True
+    assert r["result"]["source"] == "x ^ 2 - 1"
+    assert r["result"]["latex"]
+    assert r["result"]["mathml"].startswith("<math")
+
+
+def test_cas_result_is_symbolically_verified_never_proven(client):
+    r = client.post("/api/cas", json={"op": "derivative", "expr": "x^3"}).json()
+    assert r["status"] == "symbolic"
+    assert r["status_label"] == "✓ Symbolically Verified"
+
+
+def test_cas_evaluation_is_numeric(client):
+    r = client.post("/api/cas", json={"op": "evaluate", "expr": "x^2 + 1",
+                                      "point": "3"}).json()
+    assert r["status"] == "numeric"
+    assert r["status_label"] == "≈ Numerically Verified"
+
+
+def test_cas_solve_returns_all_roots(client):
+    r = client.post("/api/cas", json={"op": "solve", "expr": "x^2 - 4"}).json()
+    assert sorted(x["source"] for x in r["results"]) == ["-2", "2"]
+
+
+def test_cas_bad_input_is_200_with_a_message(client):
+    r = client.post("/api/cas", json={"op": "simplify", "expr": "x +"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["message"]
+
+
+def test_cas_unknown_antiderivative_is_admitted(client):
+    r = client.post("/api/cas", json={
+        "op": "integral", "expr": "Real.tan(x) * Real.exp(x^2)"}).json()
+    assert r["ok"] is False
+    assert "antiderivative" in r["message"]
+
+
+# --------------------------------------------------------------------------
+# rendered mathematics
+# --------------------------------------------------------------------------
+
+def test_render_returns_blocks_in_source_order(client):
+    r = client.post("/api/render", json={"content":
+        "def sq (x : Real) : Real := x * x\n"
+        "theorem t (a : Nat) : a + 0 = a := by rfl"}).json()
+    assert r["ok"] is True
+    assert [b["name"] for b in r["blocks"]] == ["sq", "t"]
+
+
+def test_render_carries_mathml_and_latex(client):
+    r = client.post("/api/render", json={
+        "content": "theorem t (a : Nat) : a + 0 = a := by rfl"}).json()
+    block = r["blocks"][0]
+    assert block["type"]["mathml"].startswith("<math")
+    assert "\\forall" in block["type"]["latex"]
+    assert r["document_latex"]
+
+
+def test_render_keeps_the_engine_status(client):
+    r = client.post("/api/render", json={
+        "content": "theorem t (a : Nat) : a + 0 = a := by rfl\n"
+                   "theorem n : Real.sin(0) = 0 := by numeric"}).json()
+    by_name = {b["name"]: b for b in r["blocks"]}
+    assert by_name["t"]["status_label"] == "✓ Formally Proven"
+    assert by_name["n"]["status_label"] == "≈ Numerically Verified"
+
+
+def test_render_shows_a_definition_body_but_not_a_proof_term(client):
+    r = client.post("/api/render", json={
+        "content": "def sq (x : Real) : Real := x * x\n"
+                   "theorem t (a : Nat) : a + 0 = a := by rfl"}).json()
+    by_name = {b["name"]: b for b in r["blocks"]}
+    assert "value" in by_name["sq"]
+    assert "value" not in by_name["t"]
+
+
+def test_render_of_a_broken_file_reports_rather_than_500(client):
+    r = client.post("/api/render", json={"content": "theorem bad : 1 = 2 := by rfl"})
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert r.json()["diagnostics"]

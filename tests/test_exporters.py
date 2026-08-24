@@ -362,15 +362,28 @@ class TestMathML:
         assert root.find(".//{*}msub") is not None
 
     def test_double_struck_numeric_types(self, env):
+        """Blackboard bold comes out as the character, not as a variant.
+
+        `mathvariant="double-struck"` is deprecated in MathML Core and
+        browsers honour it inconsistently — ℝ rendered as an italic R. The
+        literal character always renders.
+        """
         root = _mml_root(term_to_mathml(env, Const("Real")))
         mi = root.find(".//{*}mi")
         assert mi is not None
-        assert mi.get("mathvariant") == "double-struck"
-        assert mi.text == "R"
+        assert mi.text == "ℝ"
+        assert mi.get("mathvariant") is None
         # prelude alias renders the same way
         root2 = _mml_root(term_to_mathml(env, Const("ℝ")))
-        mi2 = root2.find(".//{*}mi")
-        assert mi2.get("mathvariant") == "double-struck"
+        assert root2.find(".//{*}mi").text == "ℝ"
+
+    @pytest.mark.parametrize("name,char", [
+        ("Nat", "ℕ"), ("Int", "ℤ"), ("Rat", "ℚ"), ("Real", "ℝ"),
+        ("Complex", "ℂ"),
+    ])
+    def test_every_numeric_type_renders_as_its_character(self, env, name, char):
+        root = _mml_root(term_to_mathml(env, Const(name)))
+        assert root.find(".//{*}mi").text == char
 
     def test_string_literal_uses_mtext(self, env):
         root = _mml_root(term_to_mathml(env, StrLit("hi")))
