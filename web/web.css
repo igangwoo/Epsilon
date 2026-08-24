@@ -1,0 +1,86 @@
+/* ===================================================================
+ * Epsilon — web-deployment overrides.
+ *
+ * `app.css` is the shared stylesheet, copied verbatim from
+ * `epsilon/server/static/` on every build (it is the source of truth for
+ * the desktop/local build and must not be edited here). This file layers
+ * on only what differs when the IDE is served as a public web page.
+ *
+ * Rule of thumb: a control that imitates the host operating system but
+ * cannot actually do anything here does not belong on the page. The
+ * macOS-style window buttons are decoration in a browser tab — a close
+ * button that closes nothing — so the web build drops them and moves the
+ * wordmark to the leading edge, the way web apps are laid out. The
+ * desktop chrome stays intact in the shared stylesheet for the native
+ * builds that will use it.
+ * =================================================================== */
+
+/* --- no fake window chrome on a web page --- */
+.titlebar .traffic { display: none; }
+
+/* --- brand on the leading edge (web convention) --- */
+.titlebar .title-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.wordmark {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+}
+
+.wordmark .mark {
+  width: 23px;
+  height: 23px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  font: 700 15px/1 Georgia, "Times New Roman", serif;
+  color: #fff;
+  background: linear-gradient(140deg, var(--accent), var(--accent-2));
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.wordmark .name {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.3px;
+  color: var(--fg);
+}
+
+/* the centre column becomes pure spacing once the brand moves left */
+.titlebar .title-center {
+  flex: 1;
+  min-width: 0;
+}
+
+/* --- link back to the source (this build is source-available) --- */
+.repo-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  color: var(--fg-faint);
+  background: var(--glass-hi);
+  border: 1px solid var(--glass-border);
+  transition: var(--trans);
+}
+
+.repo-link:hover {
+  color: var(--fg);
+  background: var(--glass-border);
+}
+
+/* --- narrow screens: the wordmark text can go, the mark stays --- */
+@media (max-width: 720px) {
+  .wordmark .name,
+  .titlebar .brand-sub {
+    display: none;
+  }
+}

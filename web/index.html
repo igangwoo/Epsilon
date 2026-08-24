@@ -6,6 +6,8 @@
   <title>Epsilon</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c78ff'/%3E%3Ctext x='16' y='23' font-size='21' font-family='Georgia,serif' fill='white' text-anchor='middle'%3E%CE%B5%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="app.css" />
+  <!-- web-only overrides; app.css stays the shared source of truth -->
+  <link rel="stylesheet" href="web.css" />
   <style>
     /* one-time boot overlay while Pyodide + the engine load */
     #boot {
@@ -56,20 +58,26 @@
   <div id="app" class="app-grid">
     <header class="titlebar glass">
       <div class="title-left">
-        <span class="traffic"><i class="tl tl-r"></i><i class="tl tl-y"></i><i class="tl tl-g"></i></span>
-      </div>
-      <div class="title-center">
-        <span class="brand">Epsilon</span>
+        <span class="wordmark">
+          <span class="mark" aria-hidden="true">ε</span>
+          <span class="name">Epsilon</span>
+        </span>
         <span class="brand-sub" id="metaVersion"></span>
       </div>
+      <div class="title-center"></div>
       <div class="title-right">
         <button class="btn" id="checkBtn" title="Check (Ctrl/Cmd+Enter)">
           <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 3l9 5-9 5z" fill="currentColor"/></svg>
           Check
         </button>
         <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">
-          <svg viewBox="0 0 16 16" width="16" height="16"><path d="M8 1a7 7 0 100 14A5.5 5.5 0 018 1z" fill="currentColor"/></svg>
+          <svg viewBox="0 0 16 16" width="16" height="16"><path d="M6.2 1.4a6.6 6.6 0 108.4 8.4A7.2 7.2 0 016.2 1.4z" fill="currentColor"/></svg>
         </button>
+        <a class="repo-link" href="https://github.com/igangwoo/Epsilon"
+           target="_blank" rel="noopener noreferrer"
+           title="Source on GitHub" aria-label="Source on GitHub">
+          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0a8 8 0 00-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.83-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.52.56.83 1.28.83 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 008 0z"/></svg>
+        </a>
       </div>
     </header>
 

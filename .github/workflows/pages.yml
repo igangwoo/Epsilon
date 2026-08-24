@@ -48,6 +48,8 @@ jobs:
           test -f web/index.html
           test -f web/boot.js
           test -f web/bridge.py
+          test -f web/app.css
+          test -f web/web.css   # web-only overrides (not copied from server)
           ls web/epsilon_math-*.whl
 
       - name: Upload artifact
