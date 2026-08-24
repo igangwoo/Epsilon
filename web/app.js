@@ -427,7 +427,8 @@
     const panel = $("#problemsPanel");
     panel.innerHTML = "";
     const errs = diags.filter((d) => d.severity !== "info");
-    $("#problemCount").textContent = errs.length;
+    const warned = errs.some((d) => d.severity === "warning") && errs.every((d) => d.severity === "warning");
+    EpsilonPanes.setBadge("problems", errs.length, warned ? "warn" : "err");
     if (!errs.length) {
       panel.appendChild(el("div", "no-problems", "No problems detected."));
       return;
@@ -1100,30 +1101,16 @@
     $$(".act").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
     $$(".side-panel").forEach((p) =>
       p.classList.toggle("hidden", p.dataset.panel !== view));
-    const showGraph = view === "graph";
-    graphCanvas.classList.toggle("hidden", !showGraph);
-    $(".editor-wrap .code-scroll").classList.toggle("hidden", showGraph);
-    $("#gutter").classList.toggle("hidden", showGraph);
     document.getElementById("app").classList.remove("sidebar-collapsed");
-    $("#graphTools").classList.toggle("hidden", !showGraph);
-    if (showGraph) {
-      graphSim.alpha = Math.max(graphSim.alpha, 0.9);
-      startGraph();
-      // let the simulation open up before framing it
-      setTimeout(fitGraphView, 900);
-    } else {
-      stopGraph();
-    }
+    if (view === "graph") openPaneView("deps");
   }
 
   function switchUtil(util) {
-    $$(".util-tab").forEach((t) => t.classList.toggle("active", t.dataset.util === util));
-    $$(".util-panel").forEach((p) => p.classList.toggle("hidden", p.dataset.util !== util));
+    openPaneView(util);
   }
 
   function switchBottom(b) {
-    $$(".bottom-tab").forEach((t) => t.classList.toggle("active", t.dataset.bottom === b));
-    $$(".bottom-panel").forEach((p) => p.classList.toggle("hidden", p.dataset.bottom !== b));
+    openPaneView(b);
   }
 
   /* command palette */
@@ -1137,7 +1124,34 @@
     { name: "Export: Python", kind: "export", run: () => doExport("python", "py") },
     { name: "Export: Lean", kind: "export", run: () => doExport("lean", "lean") },
     { name: "New file", kind: "cmd", run: newFile },
+    { name: "Split pane right", kind: "pane",
+      run: () => EpsilonPanes.splitPane("row") },
+    { name: "Split pane down", kind: "pane",
+      run: () => EpsilonPanes.splitPane("col") },
+    { name: "Maximize pane", kind: "pane",
+      run: () => EpsilonPanes.toggleMaximize() },
+    { name: "Reset workspace layout", kind: "pane",
+      run: () => { EpsilonPanes.reset(); toast("Workspace reset", "ok"); } },
   ];
+
+  // opening any registered view, and switching workspace profile, are
+  // commands too - so every tool is reachable without hunting for a button
+  const PANE_COMMANDS = [
+    ["editor", "Editor"], ["proof", "Proof"], ["plot", "Plot"],
+    ["inspector", "Inspector"], ["problems", "Problems"],
+    ["console", "Console"], ["output", "Output"],
+    ["deps", "Dependency graph"],
+  ].map(([id, label]) => ({
+    name: "Open: " + label, kind: "view", run: () => openPaneView(id),
+  }));
+
+  const PROFILE_COMMANDS = [
+    ["mathematics", "Mathematics"], ["algorithm", "Algorithm"],
+    ["research", "Research"], ["minimal", "Minimal"],
+  ].map(([id, label]) => ({
+    name: "Workspace: " + label, kind: "layout",
+    run: () => { EpsilonPanes.applyProfile(id); toast(label + " layout", "ok"); },
+  }));
   let paletteMode = "cmd";
   let paletteItems = [];
   let paletteSel = 0;
@@ -1160,7 +1174,8 @@
         .filter((f) => f.path.toLowerCase().includes(q))
         .map((f) => ({ name: f.path, kind: "file", run: () => openFile(f.path) }));
     } else {
-      paletteItems = COMMANDS.filter((c) => c.name.toLowerCase().includes(q));
+      paletteItems = COMMANDS.concat(PANE_COMMANDS, PROFILE_COMMANDS)
+        .filter((c) => c.name.toLowerCase().includes(q));
     }
     paletteSel = 0;
     renderPalette();
@@ -1647,93 +1662,11 @@
   }
 
   /* ===================================================================
-   * Resizable layout
-   * =================================================================== */
-  const LAYOUT_KEY = "epsilon.layout.v1";
-  const layout = { side: 280, util: 320, bottom: 190 };
-
-  function loadLayout() {
-    try {
-      Object.assign(layout, JSON.parse(localStorage.getItem(LAYOUT_KEY)) || {});
-    } catch (e) {}
-    applyLayout();
-  }
-
-  function applyLayout() {
-    const app = document.getElementById("app");
-    app.style.gridTemplateColumns =
-      `52px ${layout.side}px 1fr ${layout.util}px`;
-    app.style.gridTemplateRows = `44px 1fr ${layout.bottom}px 26px`;
-    try {
-      localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
-    } catch (e) {}
-  }
-
-  function resetLayout() {
-    layout.side = 280; layout.util = 320; layout.bottom = 190;
-    applyLayout();
-    toast("Layout reset", "ok");
-  }
-
-  function initResizers() {
-    const app = document.getElementById("app");
-    const bounds = { side: [150, 640], util: [180, 720], bottom: [60, 620] };
-
-    $$(".resizer").forEach((handle) => {
-      const which = handle.dataset.resize;
-      let startPos = 0, startVal = 0, dragging = false;
-
-      const onMove = (ev) => {
-        if (!dragging) return;
-        const p = ev.touches ? ev.touches[0] : ev;
-        const delta = (which === "bottom")
-          ? startPos - p.clientY
-          : (which === "util" ? startPos - p.clientX : p.clientX - startPos);
-        const [lo, hi] = bounds[which];
-        layout[which] = Math.max(lo, Math.min(hi, startVal + delta));
-        applyLayout();
-      };
-      const onUp = () => {
-        dragging = false;
-        document.body.classList.remove("resizing");
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", onUp);
-        if (!graphCanvas.classList.contains("hidden")) drawGraph();
-      };
-      handle.addEventListener("mousedown", (ev) => {
-        ev.preventDefault();
-        dragging = true;
-        startPos = which === "bottom" ? ev.clientY : ev.clientX;
-        startVal = layout[which];
-        document.body.classList.add("resizing");
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
-      });
-      handle.addEventListener("dblclick", resetLayout);
-      // keyboard accessible
-      handle.addEventListener("keydown", (ev) => {
-        const step = ev.shiftKey ? 40 : 12;
-        if (ev.key === "ArrowLeft" || ev.key === "ArrowUp") {
-          layout[which] += which === "side" ? -step : step;
-        } else if (ev.key === "ArrowRight" || ev.key === "ArrowDown") {
-          layout[which] += which === "side" ? step : -step;
-        } else return;
-        ev.preventDefault();
-        const [lo, hi] = bounds[which];
-        layout[which] = Math.max(lo, Math.min(hi, layout[which]));
-        applyLayout();
-      });
-    });
-  }
-
-  /* ===================================================================
    * Editor intelligence wiring
    * =================================================================== */
   function wireIntelligence() {
     measureText();
     editor.classList.add("custom-caret");
-    loadLayout();
-    initResizers();
     loadConsoleHistory();
 
     // --- caret ---
@@ -1848,6 +1781,51 @@
     });
   }
 
+
+  /* ===================================================================
+   * Pane workspace
+   *
+   * Every tool is a view in the shared pane system rather than a panel
+   * nailed to a fixed grid slot. The view elements are the same DOM nodes
+   * the rest of this file already talks to, so nothing else has to change.
+   * =================================================================== */
+  const PANE_VIEWS = [
+    { id: "editor",    title: "Editor",     icon: "∑", element: "#viewEditor",
+      closable: false, onShow: () => { measureText(); renderEditor(); updateCaret(); } },
+    { id: "proof",     title: "Proof",      icon: "∴", element: "#proofPanel" },
+    { id: "plot",      title: "Plot",       icon: "📈", element: "#plotPanel",
+      onShow: () => { if (state.lastCheck) renderPlots(state.lastCheck.plots || []); } },
+    { id: "inspector", title: "Inspector",  icon: "🔍", element: "#inspectorPanel" },
+    { id: "problems",  title: "Problems",   icon: "⚠", element: "#problemsPanel" },
+    { id: "console",   title: "Console",    icon: "›", element: "#consolePanel" },
+    { id: "output",    title: "Output",     icon: "⎙", element: "#outputPanel" },
+    { id: "deps",      title: "Dependencies", icon: "◇", element: "#viewDeps",
+      onShow: () => {
+        graphSim.alpha = Math.max(graphSim.alpha, 0.9);
+        startGraph();
+        setTimeout(fitGraphView, 800);
+      } },
+  ];
+
+  function initPanes() {
+    EpsilonPanes.init({
+      host: "#paneHost",
+      vault: "#viewVault",
+      views: PANE_VIEWS,
+      onChange: () => {
+        // geometry changed: canvases and the caret need remeasuring
+        requestAnimationFrame(() => {
+          measureText();
+          updateCaret();
+          if (EpsilonPanes.isOpen("deps")) drawGraph(); else stopGraph();
+          if (state.lastCheck) renderPlots(state.lastCheck.plots || []);
+        });
+      },
+    });
+  }
+
+  function openPaneView(id) { EpsilonPanes.openView(id); }
+
   /* ===================================================================
    * wiring
    * =================================================================== */
@@ -1856,12 +1834,8 @@
     $("#themeBtn").onclick = toggleTheme;
     $("#newFileBtn").onclick = newFile;
     $("#paletteBtn").onclick = () => openPalette("cmd");
-    $("#bottomCollapse").onclick = () =>
-      document.getElementById("app").classList.toggle("bottom-collapsed");
     $$(".act[data-view]").forEach((a) =>
       (a.onclick = () => switchView(a.dataset.view)));
-    $$(".util-tab").forEach((t) => (t.onclick = () => switchUtil(t.dataset.util)));
-    $$(".bottom-tab").forEach((t) => (t.onclick = () => switchBottom(t.dataset.bottom)));
 
     document.addEventListener("keydown", (e) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;
@@ -1881,6 +1855,7 @@
       const saved = localStorage.getItem("epsilon-theme");
       if (saved) document.documentElement.setAttribute("data-theme", saved);
     } catch (e) {}
+    initPanes();
     wire();
     wireIntelligence();
     state.meta = await api("GET", "/api/meta");

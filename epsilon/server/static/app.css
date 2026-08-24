@@ -130,17 +130,15 @@ html, body {
 .app-grid {
   position: relative; z-index: 1;
   display: grid; height: 100vh; gap: 8px; padding: 8px;
-  grid-template-columns: 52px 280px 1fr 320px;
-  grid-template-rows: 44px 1fr 190px 26px;
+  grid-template-columns: 52px 280px 1fr;
+  grid-template-rows: 44px 1fr 26px;
   grid-template-areas:
-    "title   title    title   title"
-    "act     side     editor  util"
-    "act     bottom   bottom  bottom"
-    "status  status   status  status";
+    "title   title    title"
+    "act     side     panes"
+    "status  status   status";
 }
-.app-grid.sidebar-collapsed { grid-template-columns: 52px 0 1fr 320px; }
-.app-grid.util-collapsed { grid-template-columns: 52px 280px 1fr 0; }
-.app-grid.bottom-collapsed { grid-template-rows: 44px 1fr 30px 26px; }
+.app-grid.sidebar-collapsed { grid-template-columns: 52px 0 1fr; }
+.pane-host { grid-area: panes; min-width: 0; min-height: 0; display: flex; }
 
 .titlebar { grid-area: title; border-radius: var(--radius);
   display: flex; align-items: center; padding: 0 14px; }
@@ -622,3 +620,98 @@ body.resizing { user-select: none; cursor: col-resize; }
 .graph-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .graph-legend i { width: 8px; height: 8px; border-radius: 50%;
   display: inline-block; }
+
+/* ===================================================================
+   Pane system — one infrastructure for every tool
+   =================================================================== */
+.pane-split { display: flex; flex: 1 1 0; min-width: 0; min-height: 0; gap: 0; }
+.pane-split.row { flex-direction: row; }
+.pane-split.col { flex-direction: column; }
+
+.pane-sash { flex: 0 0 6px; position: relative; z-index: 4; }
+.pane-sash.row { cursor: col-resize; }
+.pane-sash.col { cursor: row-resize; }
+.pane-sash::after {
+  content: ""; position: absolute; border-radius: 3px;
+  background: transparent; transition: background var(--trans);
+}
+.pane-sash.row::after { inset: 6px 1px; }
+.pane-sash.col::after { inset: 1px 6px; }
+.pane-sash:hover::after, .pane-sash:focus-visible::after,
+body.resizing .pane-sash::after { background: var(--accent); opacity: 0.5; }
+.pane-sash:focus-visible { outline: none; }
+
+.pane {
+  flex: 1 1 0; min-width: 0; min-height: 0; display: flex;
+  flex-direction: column; border-radius: var(--radius); overflow: hidden;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur)) saturate(150%);
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(150%);
+  border: 1px solid var(--glass-border); box-shadow: var(--shadow);
+  transition: border-color var(--trans);
+}
+.pane.focused { border-color: color-mix(in srgb, var(--accent) 45%, var(--glass-border)); }
+
+.pane-tabs {
+  display: flex; align-items: center; gap: 3px; padding: 5px 6px;
+  border-bottom: 1px solid var(--glass-border); min-height: 36px;
+  overflow-x: auto; scrollbar-width: none;
+}
+.pane-tabs::-webkit-scrollbar { display: none; }
+.pane-tabs-spacer { flex: 1 1 auto; }
+
+.pane-tab {
+  display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px;
+  border-radius: 7px; cursor: pointer; font-size: 12px; white-space: nowrap;
+  color: var(--fg-faint); border: 1px solid transparent;
+  transition: var(--trans); user-select: none;
+}
+.pane-tab:hover { background: var(--glass-hi); color: var(--fg-dim); }
+.pane-tab.active { background: var(--glass-hi); color: var(--fg);
+  border-color: var(--glass-border); }
+.pane-tab-icon { font-size: 11px; opacity: 0.85; }
+.pane-tab-close { width: 14px; height: 14px; border-radius: 4px;
+  text-align: center; line-height: 13px; opacity: 0.45; font-size: 13px; }
+.pane-tab-close:hover { opacity: 1; background: var(--glass-border); }
+.pane-tab-badge { min-width: 15px; height: 15px; padding: 0 4px; border-radius: 7px;
+  font-size: 9.5px; font-weight: 650; line-height: 15px; text-align: center;
+  background: var(--glass-border); color: var(--fg-dim); }
+.pane-tab-badge[data-tone="err"] { background: color-mix(in srgb, var(--err) 26%, transparent);
+  color: var(--err); }
+.pane-tab-badge[data-tone="warn"] { background: color-mix(in srgb, var(--heur) 26%, transparent);
+  color: var(--heur); }
+
+.pane-btn {
+  flex: 0 0 auto; width: 22px; height: 22px; border-radius: 6px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--fg-faint); cursor: pointer; font-size: 11px; line-height: 1;
+  transition: var(--trans);
+}
+.pane-btn:hover { color: var(--fg); background: var(--glass-hi);
+  border-color: var(--glass-border); }
+
+.pane-body { flex: 1 1 0; min-height: 0; position: relative; display: flex; }
+.pane-view { flex: 1 1 0; min-width: 0; min-height: 0; }
+.pane-empty { margin: auto; padding: 20px; text-align: center;
+  color: var(--fg-faint); font-size: 12px; max-width: 260px; line-height: 1.5; }
+
+/* view shells */
+.view-editor { display: flex; flex-direction: column; gap: 8px; padding: 6px; }
+.view-scroll { overflow: auto; padding: 0; }
+.view-console { display: flex; flex-direction: column; min-height: 0; }
+.view-graph { position: relative; }
+
+/* the editor view supplies its own chrome inside the pane */
+.view-editor .tabstrip { min-height: 34px; }
+.view-editor .editor-wrap { flex: 1 1 0; min-height: 0; }
+
+/* drop zones while dragging a tab */
+.pane-drop { position: absolute; pointer-events: none; z-index: 8;
+  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  border: 1px solid var(--accent); border-radius: 9px; }
+.pane-drop.hidden { display: none; }
+.pane-drop.center { inset: 8px; }
+.pane-drop.left  { left: 4px; top: 4px; bottom: 4px; width: 46%; }
+.pane-drop.right { right: 4px; top: 4px; bottom: 4px; width: 46%; }
+.pane-drop.up    { left: 4px; right: 4px; top: 4px; height: 46%; }
+.pane-drop.down  { left: 4px; right: 4px; bottom: 4px; height: 46%; }

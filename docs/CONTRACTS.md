@@ -161,9 +161,38 @@ GET  /api/meta                 -> {"version","language_version","brand"}
 
 ## Web IDE - `epsilon/server/static/`
 
-Files: `index.html`, `app.css`, `app.js` (NO external CDNs; self-contained).
-Talks only to the REST API above. VS Code-like layout with Apple glass
-(translucent, blurred) styling. Details in the frontend task brief.
+Files: `index.html`, `app.css`, `app.js`, `panes.js` (NO external CDNs;
+self-contained). Talks only to the REST API above. VS Code-like layout with
+Apple glass (translucent, blurred) styling. Details in the frontend task brief.
+
+`panes.js` owns the workspace layout - a binary split tree of tabbed panes.
+Views are the *existing* DOM elements, re-parented into panes rather than
+re-created, so every `$("#thmList")`-style lookup in `app.js` keeps working.
+Elements not currently placed in a pane are parked in `#viewVault` (hidden)
+so they stay in the document and remain queryable.
+
+```js
+EpsilonPanes.init({host, vault, views: [{id, title, icon, element, onShow,
+                                         closable}], onChange})
+EpsilonPanes.openView(id) / closeView(id) / isOpen(id)
+EpsilonPanes.splitPane("row"|"col", viewId?) / toggleMaximize(leafId?)
+EpsilonPanes.moveView(viewId, targetLeafId, zone)   // zone: tab|left|right|up|down
+EpsilonPanes.setBadge(id, text, tone)               // tone: "err"|"warn"|""
+EpsilonPanes.applyProfile(name) / profileNames() / reset()
+```
+Layouts persist in `localStorage["epsilon.workspace.v1"]`. A saved layout or
+profile naming a view that is not registered is pruned, never rendered blank.
+
+## Browser build - `web/`
+
+The browser-only deploy (Pyodide; no server, no install) is
+`epsilon/server/static/` plus a thin shell: `web.css` overrides, a boot
+overlay, and `boot.js`, which starts Pyodide, installs the wheel, shims
+`fetch` to route `/api/*` at `bridge.py`, adjusts the title bar for a browser
+tab, then loads the *unmodified* `app.js`.
+
+`python3 scripts/build_web.py [--wheel]` regenerates it. `tests/test_web_build.py`
+fails if the two builds drift.
 
 ## CLI - `epsilon/cli.py`
 

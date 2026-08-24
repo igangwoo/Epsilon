@@ -91,85 +91,8 @@
     </aside>
 
     <!-- editor + tabs -->
-    <div class="resizer resizer-v" data-resize="side" tabindex="0"
-         role="separator" aria-orientation="vertical"
-         title="Drag to resize · double-click to reset"></div>
+    <div class="pane-host" id="paneHost"></div>
 
-    <main class="editor-area">
-      <div class="tabstrip glass" id="tabstrip"></div>
-      <div class="editor-wrap">
-        <div class="gutter" id="gutter"></div>
-        <div class="code-scroll" id="codeScroll">
-          <pre class="highlight" id="highlight" aria-hidden="true"><code id="highlightCode"></code></pre>
-          <textarea class="code-input" id="editor" spellcheck="false"
-            autocomplete="off" autocapitalize="off" wrap="off"></textarea>
-          <div class="caret hidden" id="caret" aria-hidden="true"></div>
-        </div>
-        <div class="autocomplete hidden" id="autocomplete" role="listbox"></div>
-        <div class="graph-tools hidden" id="graphTools">
-          <button class="mini-btn" id="graphFit" title="Fit graph to view">⤢</button>
-          <button class="mini-btn" id="graphReset" title="Reset graph layout">⟳</button>
-        </div>
-        <canvas class="graph-canvas hidden" id="graphCanvas"></canvas>
-      </div>
-    </main>
-
-    <!-- utility panel -->
-    <div class="resizer resizer-v" data-resize="util" tabindex="0"
-         role="separator" aria-orientation="vertical"
-         title="Drag to resize · double-click to reset"></div>
-
-    <aside class="utility glass" id="utility">
-      <div class="util-tabs">
-        <button class="util-tab active" data-util="proof">Proof</button>
-        <button class="util-tab" data-util="plot">Plot</button>
-        <button class="util-tab" data-util="inspector">Inspector</button>
-      </div>
-      <div class="util-body">
-        <div class="util-panel" data-util="proof" id="proofPanel">
-          <div class="empty-hint">Select a theorem to see its proof tree.</div>
-        </div>
-        <div class="util-panel hidden" data-util="plot" id="plotPanel">
-          <div class="empty-hint">Plots from the last check appear here.</div>
-        </div>
-        <div class="util-panel hidden" data-util="inspector" id="inspectorPanel">
-          <div id="inspectorSymbol"></div>
-          <div id="inspectorResults">
-            <div class="empty-hint">#check / #eval results appear here.</div>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <!-- bottom panel -->
-    <div class="resizer resizer-h" data-resize="bottom" tabindex="0"
-         role="separator" aria-orientation="horizontal"
-         title="Drag to resize · double-click to reset"></div>
-
-    <section class="bottom glass" id="bottom">
-      <div class="bottom-tabs">
-        <button class="bottom-tab active" data-bottom="problems">Problems <span class="badge" id="problemCount">0</span></button>
-        <button class="bottom-tab" data-bottom="console">Console</button>
-        <button class="bottom-tab" data-bottom="output">Output</button>
-        <button class="mini-btn bottom-collapse" id="bottomCollapse" title="Collapse">▾</button>
-      </div>
-      <div class="bottom-body">
-        <div class="bottom-panel" data-bottom="problems" id="problemsPanel"></div>
-        <div class="bottom-panel hidden" data-bottom="console" id="consolePanel">
-          <div class="console-log" id="consoleLog"></div>
-          <div class="console-input-row">
-            <span class="console-prompt">ε&gt;</span>
-            <textarea class="console-input" id="consoleInput" rows="1"
-              spellcheck="false" autocomplete="off"
-              placeholder="evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete"></textarea>
-            <button class="mini-btn" id="consoleClear" title="Clear console">⌫</button>
-          </div>
-        </div>
-        <div class="bottom-panel hidden" data-bottom="output" id="outputPanel"></div>
-      </div>
-    </section>
-
-    <!-- status bar -->
     <footer class="statusbar glass">
       <span class="status-left">
         <span id="checkState" class="chip">ready</span>
@@ -191,11 +114,61 @@
     </div>
   </div>
 
-  <!-- toasts -->
+  <!-- Pane views. These elements are re-parented into panes by panes.js;
+       they live here only so the document has somewhere to define them. -->
+  <div id="viewVault" hidden>
+    <div id="viewDeps" class="view-graph">
+      <div class="graph-tools" id="graphTools">
+        <button class="mini-btn" id="graphFit" title="Fit graph to view">⤢</button>
+        <button class="mini-btn" id="graphReset" title="Reset graph layout">⟳</button>
+      </div>
+      <canvas class="graph-canvas" id="graphCanvas"></canvas>
+    </div>
+    <div id="viewEditor" class="view-editor">
+      <div class="tabstrip glass" id="tabstrip"></div>
+      <div class="editor-wrap">
+        <div class="gutter" id="gutter"></div>
+        <div class="code-scroll" id="codeScroll">
+          <pre class="highlight" id="highlight" aria-hidden="true"><code id="highlightCode"></code></pre>
+          <textarea class="code-input" id="editor" spellcheck="false"
+            autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+          <div class="caret hidden" id="caret" aria-hidden="true"></div>
+        </div>
+        <div class="autocomplete hidden" id="autocomplete" role="listbox"></div>
+      </div>
+    </div>
+    <div class="view-scroll" id="proofPanel">
+      <div class="empty-hint">Select a theorem to see its proof tree.</div>
+    </div>
+    <div class="view-scroll" id="plotPanel">
+      <div class="empty-hint">Plots from the last check appear here.</div>
+    </div>
+    <div class="view-scroll" id="inspectorPanel">
+      <div id="inspectorSymbol"></div>
+      <div id="inspectorResults">
+        <div class="empty-hint">#check / #eval results appear here.</div>
+      </div>
+    </div>
+    <div class="view-scroll" id="problemsPanel"></div>
+    <div class="view-console" id="consolePanel">
+      <div class="console-log" id="consoleLog"></div>
+      <div class="console-input-row">
+        <span class="console-prompt">ε&gt;</span>
+        <textarea class="console-input" id="consoleInput" rows="1"
+          spellcheck="false" autocomplete="off"
+          placeholder="evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete"></textarea>
+        <button class="mini-btn" id="consoleClear" title="Clear console">⌫</button>
+      </div>
+    </div>
+    <div class="view-scroll" id="outputPanel"></div>
+  </div>
+
   <div class="hover-tip hidden" id="hoverTip"></div>
 
+  <!-- toasts -->
   <div class="toast-stack" id="toastStack"></div>
 
+  <script src="panes.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

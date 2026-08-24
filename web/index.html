@@ -40,6 +40,7 @@
   </style>
 </head>
 <body>
+  <!-- animated glass background -->
   <div id="boot">
     <div class="logo">ε</div>
     <div class="title">Epsilon</div>
@@ -56,15 +57,15 @@
   </div>
 
   <div id="app" class="app-grid">
+    <!-- title bar -->
     <header class="titlebar glass">
       <div class="title-left">
-        <span class="wordmark">
-          <span class="mark" aria-hidden="true">ε</span>
-          <span class="name">Epsilon</span>
-        </span>
+        <span class="traffic"><i class="tl tl-r"></i><i class="tl tl-y"></i><i class="tl tl-g"></i></span>
+      </div>
+      <div class="title-center">
+        <span class="brand">Epsilon</span>
         <span class="brand-sub" id="metaVersion"></span>
       </div>
-      <div class="title-center"></div>
       <div class="title-right">
         <button class="btn" id="checkBtn" title="Check (Ctrl/Cmd+Enter)">
           <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 3l9 5-9 5z" fill="currentColor"/></svg>
@@ -73,14 +74,10 @@
         <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">
           <svg viewBox="0 0 16 16" width="16" height="16"><path d="M6.2 1.4a6.6 6.6 0 108.4 8.4A7.2 7.2 0 016.2 1.4z" fill="currentColor"/></svg>
         </button>
-        <a class="repo-link" href="https://github.com/igangwoo/Epsilon"
-           target="_blank" rel="noopener noreferrer"
-           title="Source on GitHub" aria-label="Source on GitHub">
-          <svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor"><path d="M8 0a8 8 0 00-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.83-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.52.56.83 1.28.83 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 008 0z"/></svg>
-        </a>
       </div>
     </header>
 
+    <!-- activity bar -->
     <nav class="activitybar glass" aria-label="Activity">
       <button class="act active" data-view="explorer" title="Explorer" aria-label="Explorer">
         <svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 4h7l2 2h9v14H3z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
@@ -100,6 +97,7 @@
       </button>
     </nav>
 
+    <!-- sidebar -->
     <aside class="sidebar glass" id="sidebar">
       <div class="side-panel" data-panel="explorer">
         <div class="side-head">Explorer
@@ -132,11 +130,41 @@
       </div>
     </aside>
 
-    <div class="resizer resizer-v" data-resize="side" tabindex="0"
-         role="separator" aria-orientation="vertical"
-         title="Drag to resize · double-click to reset"></div>
+    <!-- editor + tabs -->
+    <div class="pane-host" id="paneHost"></div>
 
-    <main class="editor-area">
+    <footer class="statusbar glass">
+      <span class="status-left">
+        <span id="checkState" class="chip">ready</span>
+        <span class="status-counts" id="statusCounts"></span>
+      </span>
+      <span class="status-right">
+        <span id="cursorPos">Ln 1, Col 1</span>
+        <span class="dot">·</span>
+        <span>Epsilon v0.1</span>
+      </span>
+    </footer>
+  </div>
+
+  <!-- command palette -->
+  <div class="palette-overlay hidden" id="paletteOverlay">
+    <div class="palette glass">
+      <input class="palette-input" id="paletteInput" placeholder="Type a command or file…" />
+      <ul class="palette-list" id="paletteList"></ul>
+    </div>
+  </div>
+
+  <!-- Pane views. These elements are re-parented into panes by panes.js;
+       they live here only so the document has somewhere to define them. -->
+  <div id="viewVault" hidden>
+    <div id="viewDeps" class="view-graph">
+      <div class="graph-tools" id="graphTools">
+        <button class="mini-btn" id="graphFit" title="Fit graph to view">⤢</button>
+        <button class="mini-btn" id="graphReset" title="Reset graph layout">⟳</button>
+      </div>
+      <canvas class="graph-canvas" id="graphCanvas"></canvas>
+    </div>
+    <div id="viewEditor" class="view-editor">
       <div class="tabstrip glass" id="tabstrip"></div>
       <div class="editor-wrap">
         <div class="gutter" id="gutter"></div>
@@ -147,91 +175,40 @@
           <div class="caret hidden" id="caret" aria-hidden="true"></div>
         </div>
         <div class="autocomplete hidden" id="autocomplete" role="listbox"></div>
-        <div class="graph-tools hidden" id="graphTools">
-          <button class="mini-btn" id="graphFit" title="Fit graph to view">⤢</button>
-          <button class="mini-btn" id="graphReset" title="Reset graph layout">⟳</button>
-        </div>
-        <canvas class="graph-canvas hidden" id="graphCanvas"></canvas>
       </div>
-    </main>
-
-    <div class="resizer resizer-v" data-resize="util" tabindex="0"
-         role="separator" aria-orientation="vertical"
-         title="Drag to resize · double-click to reset"></div>
-
-    <aside class="utility glass" id="utility">
-      <div class="util-tabs">
-        <button class="util-tab active" data-util="proof">Proof</button>
-        <button class="util-tab" data-util="plot">Plot</button>
-        <button class="util-tab" data-util="inspector">Inspector</button>
-      </div>
-      <div class="util-body">
-        <div class="util-panel" data-util="proof" id="proofPanel">
-          <div class="empty-hint">Select a theorem to see its proof tree.</div>
-        </div>
-        <div class="util-panel hidden" data-util="plot" id="plotPanel">
-          <div class="empty-hint">Plots from the last check appear here.</div>
-        </div>
-        <div class="util-panel hidden" data-util="inspector" id="inspectorPanel">
-          <div id="inspectorSymbol"></div>
-          <div id="inspectorResults">
-            <div class="empty-hint">#check / #eval results appear here.</div>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <div class="resizer resizer-h" data-resize="bottom" tabindex="0"
-         role="separator" aria-orientation="horizontal"
-         title="Drag to resize · double-click to reset"></div>
-
-    <section class="bottom glass" id="bottom">
-      <div class="bottom-tabs">
-        <button class="bottom-tab active" data-bottom="problems">Problems <span class="badge" id="problemCount">0</span></button>
-        <button class="bottom-tab" data-bottom="console">Console</button>
-        <button class="bottom-tab" data-bottom="output">Output</button>
-        <button class="mini-btn bottom-collapse" id="bottomCollapse" title="Collapse">▾</button>
-      </div>
-      <div class="bottom-body">
-        <div class="bottom-panel" data-bottom="problems" id="problemsPanel"></div>
-        <div class="bottom-panel hidden" data-bottom="console" id="consolePanel">
-          <div class="console-log" id="consoleLog"></div>
-          <div class="console-input-row">
-            <span class="console-prompt">ε&gt;</span>
-            <textarea class="console-input" id="consoleInput" rows="1"
-              spellcheck="false" autocomplete="off"
-              placeholder="evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete"></textarea>
-            <button class="mini-btn" id="consoleClear" title="Clear console">⌫</button>
-          </div>
-        </div>
-        <div class="bottom-panel hidden" data-bottom="output" id="outputPanel"></div>
-      </div>
-    </section>
-
-    <footer class="statusbar glass">
-      <span class="status-left">
-        <span id="checkState" class="chip">ready</span>
-        <span class="status-counts" id="statusCounts"></span>
-      </span>
-      <span class="status-right">
-        <span id="cursorPos">Ln 1, Col 1</span>
-        <span class="dot">·</span>
-        <span>runs in your browser</span>
-      </span>
-    </footer>
-  </div>
-
-  <div class="palette-overlay hidden" id="paletteOverlay">
-    <div class="palette glass">
-      <input class="palette-input" id="paletteInput" placeholder="Type a command or file…" />
-      <ul class="palette-list" id="paletteList"></ul>
     </div>
+    <div class="view-scroll" id="proofPanel">
+      <div class="empty-hint">Select a theorem to see its proof tree.</div>
+    </div>
+    <div class="view-scroll" id="plotPanel">
+      <div class="empty-hint">Plots from the last check appear here.</div>
+    </div>
+    <div class="view-scroll" id="inspectorPanel">
+      <div id="inspectorSymbol"></div>
+      <div id="inspectorResults">
+        <div class="empty-hint">#check / #eval results appear here.</div>
+      </div>
+    </div>
+    <div class="view-scroll" id="problemsPanel"></div>
+    <div class="view-console" id="consolePanel">
+      <div class="console-log" id="consoleLog"></div>
+      <div class="console-input-row">
+        <span class="console-prompt">ε&gt;</span>
+        <textarea class="console-input" id="consoleInput" rows="1"
+          spellcheck="false" autocomplete="off"
+          placeholder="evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete"></textarea>
+        <button class="mini-btn" id="consoleClear" title="Clear console">⌫</button>
+      </div>
+    </div>
+    <div class="view-scroll" id="outputPanel"></div>
   </div>
 
   <div class="hover-tip hidden" id="hoverTip"></div>
 
+  <!-- toasts -->
   <div class="toast-stack" id="toastStack"></div>
 
+  <script src="panes.js"></script>
   <script src="boot.js"></script>
 </body>
 </html>

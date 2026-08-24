@@ -168,7 +168,55 @@ plot Real.sin, x ∈ [-6, 6]
   }
 
   /* -------- boot sequence -------- */
+  /* -------------------------------------------------------------------
+   * Web-only title bar.
+   *
+   * index.html is generated from the shared IDE markup, which carries the
+   * desktop window chrome (the macOS-style traffic lights). Those buttons
+   * cannot do anything in a browser tab, so the web build swaps them for a
+   * leading-edge wordmark and a link back to the source. Doing it here
+   * rather than in a forked index.html keeps a single HTML source for both
+   * builds; `web.css` holds the matching styling.
+   * ----------------------------------------------------------------- */
+  function applyWebChrome() {
+    const left = document.querySelector(".titlebar .title-left");
+    const center = document.querySelector(".titlebar .title-center");
+    const right = document.querySelector(".titlebar .title-right");
+    if (!left || !right) return;
+
+    const traffic = left.querySelector(".traffic");
+    if (traffic) traffic.remove();
+
+    if (!left.querySelector(".wordmark")) {
+      const wm = document.createElement("span");
+      wm.className = "wordmark";
+      wm.innerHTML = '<span class="mark" aria-hidden="true">\u03b5</span>' +
+                     '<span class="name">Epsilon</span>';
+      left.insertBefore(wm, left.firstChild);
+    }
+
+    // the version chip rides with the wordmark once the brand moves left
+    const sub = document.getElementById("metaVersion");
+    if (sub && sub.parentNode !== left) left.appendChild(sub);
+    const brand = center && center.querySelector(".brand");
+    if (brand) brand.remove();
+
+    if (!right.querySelector(".repo-link")) {
+      const a = document.createElement("a");
+      a.className = "repo-link";
+      a.href = "https://github.com/igangwoo/Epsilon";
+      a.target = "_blank";
+      a.rel = "noopener noreferrer";
+      a.title = "Source on GitHub";
+      a.setAttribute("aria-label", "Source on GitHub");
+      a.innerHTML = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">' +
+        '<path d="M8 0a8 8 0 00-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.83-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.52.56.83 1.28.83 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 008 0z"/></svg>';
+      right.appendChild(a);
+    }
+  }
+
   async function main() {
+    applyWebChrome();
     try {
       step("Loading the Python runtime (Pyodide)…", 8);
       detail("first load fetches ~10 MB and is cached afterwards");
