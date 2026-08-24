@@ -91,6 +91,14 @@ plot Real.sin, x ∈ [-6, 6]
       return jsonResponse(JSON.parse(out));
     }
 
+    if (path === "/api/suggest") {
+      PY.globals.set("_g", body.goal || "");
+      PY.globals.set("_h", (body.hypotheses || []));
+      PY.globals.set("_l", body.limit == null ? 12 : body.limit);
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.suggest(_g, _h.to_py() if hasattr(_h,'to_py') else _h, _l)")));
+    }
+
     if (path === "/api/render") {
       const content = body.content != null ? body.content : (FILES[body.path] || "");
       const module = (body.path || "main").split("/").pop().replace(/\.epsl$/, "");

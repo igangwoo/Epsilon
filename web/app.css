@@ -876,3 +876,44 @@ body.resizing .pane-sash::after { background: var(--accent); opacity: 0.5; }
   word-break: break-word; }
 .render-axioms { margin-top: 7px; font-size: 11px; color: var(--fg-faint);
   font-family: var(--font-mono); }
+
+/* ---------------- proof explorer ---------------- */
+.view-proof { display: flex; flex-direction: column; min-height: 0;
+  height: 100%; overflow: hidden; }
+.proof-bar { display: flex; align-items: center; gap: 7px;
+  padding: 9px 12px 7px; border-bottom: 1px solid var(--glass-border); }
+.proof-title { font-size: 11px; font-weight: 600; text-transform: uppercase;
+  letter-spacing: 0.6px; color: var(--fg-faint); white-space: nowrap; }
+.proof-goal { flex: 1; min-width: 120px; background: var(--glass-hi);
+  border: 1px solid var(--glass-border); border-radius: 8px; color: var(--fg);
+  font-family: var(--font-mono); font-size: 12px; padding: 5px 9px; }
+.proof-goal:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.proof-body { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; }
+
+.pnode-ask { margin-left: auto; width: 19px; height: 19px; flex: none;
+  border-radius: 6px; border: 1px solid var(--glass-border);
+  background: var(--glass-hi); color: var(--fg-faint); cursor: pointer;
+  font: 600 11px/1 var(--font-ui); transition: var(--trans); }
+.pnode-ask:hover { color: var(--accent); border-color: var(--accent); }
+.pnode-hyps { margin: 3px 0 2px 16px; }
+.pnode-hyp { font-family: var(--font-mono); font-size: 11.5px;
+  color: var(--fg-faint); }
+
+.suggest-head { margin-bottom: 8px; }
+.suggest-box { margin: 6px 0 6px 16px; }
+.suggest-loading, .suggest-empty { font-size: 12px; color: var(--fg-faint);
+  padding: 5px 2px; }
+.suggest-list { display: flex; flex-direction: column; gap: 5px; }
+.suggest-item { padding: 8px 10px; border-radius: 9px; cursor: pointer;
+  border: 1px solid var(--glass-border); background: var(--glass-hi);
+  transition: var(--trans); }
+.suggest-item:hover { border-color: var(--accent); }
+.suggest-tactic { display: block; font-family: var(--font-mono);
+  font-size: 12.5px; color: var(--fg); }
+.suggest-meta { display: flex; align-items: center; gap: 7px; margin-top: 4px;
+  flex-wrap: wrap; }
+.suggest-name { font-size: 11.5px; color: var(--fg-dim); }
+.suggest-why { font-size: 11px; color: var(--fg-faint); }
+.suggest-statement { margin-top: 3px; font-family: var(--font-mono);
+  font-size: 11px; color: var(--fg-faint); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }

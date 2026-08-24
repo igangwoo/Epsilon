@@ -961,11 +961,22 @@
       dot("numeric", "var(--num)") + dot("heuristic", "var(--heur)");
   }
 
-  /* ---- proof tree ---- */
+  /* ===================================================================
+   * Proof explorer
+   *
+   * The recorded proof, step by step, plus — for any goal in it — which
+   * library results actually apply to it. Every suggestion has been checked
+   * against the conditions the tactic itself enforces, so it will apply;
+   * it is still only a suggestion, and running the tactic is what puts the
+   * result through the kernel.
+   * =================================================================== */
   function showProofTree(name) {
-    const panel = $("#proofPanel");
+    const panel = $("#proofBody");
+    const title = $("#proofTitle");
+    if (!panel) return;
     const trace = state.lastCheck && state.lastCheck.traces &&
       state.lastCheck.traces[name];
+    if (title) title.textContent = name ? "Proof · " + name : "Proof";
     panel.innerHTML = "";
     if (!trace || !trace.length) {
       panel.appendChild(el("div", "empty-hint",
@@ -984,7 +995,8 @@
     trace.forEach((step) => {
       const node = {
         goal_id: step.goal_id, tactic: step.tactic, rule: step.rule,
-        target: step.before_target, after: step.after_goals || [], children: [],
+        target: step.before_target, hyps: step.before_hyps || [],
+        after: step.after_goals || [], children: [],
       };
       if (byGoal[step.goal_id]) byGoal[step.goal_id].children.push(node);
       byGoal[step.goal_id] = node;
@@ -1007,6 +1019,76 @@
     return rule;
   }
 
+  /** Ask what applies to one node's goal and show it under that node. */
+  async function askSuggestions(node, wrap) {
+    let box = wrap.querySelector(":scope > .suggest-box");
+    if (box) { box.remove(); return; }
+    box = el("div", "suggest-box");
+    box.appendChild(el("div", "suggest-loading", "Looking…"));
+    wrap.insertBefore(box, wrap.querySelector(".pnode-children") || null);
+    const r = await api("POST", "/api/suggest", {
+      goal: node.target,
+      hypotheses: (node.hyps || []).map((h) => [h.name, h.type]),
+      limit: 8,
+    });
+    box.innerHTML = "";
+    box.appendChild(suggestionList(r, node.target));
+  }
+
+  /** The free-form explorer at the top of the pane. */
+  async function exploreGoal() {
+    const goal = ($("#proofGoal").value || "").trim();
+    if (!goal) return;
+    const panel = $("#proofBody");
+    panel.innerHTML = "";
+    const head = el("div", "suggest-head");
+    head.appendChild(el("span", "pnode-goal", "⊢ " + goal));
+    panel.appendChild(head);
+    const box = el("div", "suggest-box");
+    box.appendChild(el("div", "suggest-loading", "Looking…"));
+    panel.appendChild(box);
+    const r = await api("POST", "/api/suggest", { goal, limit: 10 });
+    box.innerHTML = "";
+    box.appendChild(suggestionList(r, goal));
+  }
+
+  function suggestionList(r, goal) {
+    const list = el("div", "suggest-list");
+    if (!r || r.ok === false) {
+      list.appendChild(el("div", "suggest-empty",
+        (r && r.message) || "Could not read that goal."));
+      return list;
+    }
+    const items = r.suggestions || [];
+    if (!items.length) {
+      list.appendChild(el("div", "suggest-empty",
+        "No library result applies to this goal."));
+      return list;
+    }
+    items.forEach((s) => {
+      const row = el("div", "suggest-item");
+      const tac = el("code", "suggest-tactic", s.tactic);
+      row.appendChild(tac);
+      const meta = el("div", "suggest-meta");
+      meta.appendChild(el("span", "suggest-name", s.title));
+      if (s.status)
+        meta.appendChild(el("span", "status-chip " + s.status, STATUS_TEXT[s.status] || s.status));
+      meta.appendChild(el("span", "suggest-why",
+        s.side_goals ? `${s.why} (${s.side_goals} left)` : s.why));
+      row.appendChild(meta);
+      row.appendChild(el("div", "suggest-statement", s.statement));
+      row.title = "Insert this tactic at the caret";
+      row.onclick = () => insertAtCaret(s.tactic);
+      list.appendChild(row);
+    });
+    return list;
+  }
+
+  const STATUS_TEXT = {
+    proven: "✓ Formally Proven", symbolic: "✓ Symbolically Verified",
+    numeric: "≈ Numerically Verified", heuristic: "⚠ Heuristic Result",
+  };
+
   function renderProofNode(node) {
     const wrap = el("div", "pnode");
     const head = el("div", "pnode-head");
@@ -1014,7 +1096,21 @@
     head.appendChild(toggle);
     if (node.rule) head.appendChild(el("span", "pnode-rule", ruleLabel(node.rule)));
     head.appendChild(el("span", "pnode-tactic", node.tactic || "(open)"));
+    const ask = el("button", "pnode-ask", "?");
+    ask.title = "Which results apply to this goal?";
+    ask.onclick = (e) => {
+      e.stopPropagation();
+      askSuggestions(node, wrap);
+    };
+    head.appendChild(ask);
     wrap.appendChild(head);
+    // the context a tactic sees, not just the target
+    if (node.hyps && node.hyps.length) {
+      const ctx = el("div", "pnode-hyps");
+      node.hyps.forEach((h) =>
+        ctx.appendChild(el("div", "pnode-hyp", `${h.name} : ${h.type}`)));
+      wrap.appendChild(ctx);
+    }
     wrap.appendChild(el("div", "pnode-goal", "⊢ " + node.target));
     if (node.children.length) {
       const kids = el("div", "pnode-children");
@@ -2586,6 +2682,10 @@
       persistCollapsed();
       renderFileList();
     };
+    $("#proofSuggest").onclick = exploreGoal;
+    $("#proofGoal").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); exploreGoal(); }
+    });
     $("#renderRefresh").onclick = refreshRender;
     $("#renderShowSource").onchange = (e) => {
       render.showSource = e.target.checked;

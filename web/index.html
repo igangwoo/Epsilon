@@ -186,8 +186,18 @@
         <div class="autocomplete hidden" id="autocomplete" role="listbox"></div>
       </div>
     </div>
-    <div class="view-scroll" id="proofPanel">
-      <div class="empty-hint">Select a theorem to see its proof tree.</div>
+    <div class="view-proof" id="proofPanel">
+      <div class="proof-bar">
+        <span class="proof-title" id="proofTitle">Proof</span>
+        <span class="render-spacer"></span>
+        <input class="proof-goal" id="proofGoal" spellcheck="false"
+          autocomplete="off" placeholder="explore a goal, e.g. a + b = b + a" />
+        <button class="chip-btn" id="proofSuggest">Suggest</button>
+      </div>
+      <div class="proof-body" id="proofBody">
+        <div class="empty-hint">Select a theorem to see its proof tree, or
+          type a goal above to see which library results apply to it.</div>
+      </div>
     </div>
     <div class="view-scroll" id="plotPanel">
       <div class="empty-hint">Plots from the last check appear here.</div>

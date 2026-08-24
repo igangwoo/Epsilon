@@ -339,3 +339,37 @@ def test_render_of_a_broken_file_reports_rather_than_500(client):
     assert r.status_code == 200
     assert r.json()["ok"] is False
     assert r.json()["diagnostics"]
+
+
+# --------------------------------------------------------------------------
+# proof explorer
+# --------------------------------------------------------------------------
+
+def test_suggest_finds_the_obvious_result(client):
+    r = client.post("/api/suggest", json={
+        "goal": "a + b = b + a",
+        "hypotheses": [["a", "Nat"], ["b", "Nat"]], "limit": 5}).json()
+    assert r["ok"] is True
+    top = r["suggestions"][0]
+    assert top["name"] == "Nat.add_comm"
+    assert top["tactic"] == "exact Nat.add_comm a b"
+    assert top["title"] == "NaturalNumbers.Addition.Commutativity"
+    assert top["status"] == "proven"
+
+
+def test_suggest_never_offers_sorry_or_a_trust_axiom(client):
+    r = client.post("/api/suggest", json={
+        "goal": "a + b = b + a",
+        "hypotheses": [["a", "Nat"], ["b", "Nat"]], "limit": 50}).json()
+    names = {s["name"] for s in r["suggestions"]}
+    assert not (names & {"Epsilon.sorry", "Epsilon.trustedCAS",
+                         "Epsilon.trustedNumeric"})
+
+
+def test_suggest_on_an_unreadable_goal_is_200_with_a_message(client):
+    r = client.post("/api/suggest", json={"goal": "nonsense ++"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["message"]
+    assert body["suggestions"] == []

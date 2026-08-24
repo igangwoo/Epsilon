@@ -251,6 +251,12 @@ class CASRequest(BaseModel):
     order: int = 5
 
 
+class SuggestRequest(BaseModel):
+    goal: str
+    hypotheses: list[list[str]] = []
+    limit: int = 12
+
+
 class CheckRequest(BaseModel):
     path: Optional[str] = None
     content: Optional[str] = None
@@ -472,6 +478,29 @@ def create_app() -> FastAPI:
             "result": _term_forms(session.env, r.result) if r.result is not None else None,
             "results": [_term_forms(session.env, t) for t in r.results],
         }
+
+    # -------------------- proof explorer --------------------
+    @app.post("/api/suggest")
+    def suggest_tactics(req: SuggestRequest) -> dict:
+        """Library results that could act on this goal.
+
+        Each suggestion has been checked against the same conditions the
+        tactic itself enforces, so it will apply. It is still a suggestion:
+        nothing here proves anything, and running the tactic is what puts
+        the result through the kernel.
+        """
+        from ..suggest import suggest_for_text
+        session = repl_state["repl"].session
+        try:
+            found = suggest_for_text(
+                session, req.goal,
+                hypotheses=[(h[0], h[1]) for h in req.hypotheses if len(h) >= 2],
+                limit=max(1, min(50, req.limit)))
+        except Exception as e:  # noqa: BLE001 - a goal we cannot read is not a 500
+            return {"ok": False, "goal": req.goal, "message": str(e),
+                    "suggestions": []}
+        return {"ok": True, "goal": req.goal,
+                "suggestions": [s.as_dict() for s in found]}
 
     # -------------------- rendered mathematics --------------------
     @app.post("/api/render")

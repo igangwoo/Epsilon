@@ -101,7 +101,7 @@ and engine side.
 | Pane system (Phase 1) | done — split/tab/move/maximize, saved layouts, 4 profiles |
 | CAS pane (Phase 2) | done — 9 operations, MathML results, insert into editor, status-labelled |
 | Rendered mathematics (Phase 2) | done — MathML typesetting of the checked file, LaTeX export |
-| Proof explorer (Phase 2) | pending |
+| Proof explorer (Phase 2) | done — goal context, per-goal suggestions, free-form goal exploration |
 | Python, C++, data, algorithm panes | pending |
 
 Mathematical status labels stay exactly as the engine reports them:

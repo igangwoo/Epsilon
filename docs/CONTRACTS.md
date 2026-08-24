@@ -198,6 +198,16 @@ POST /api/cas {op, expr, variable?, point?, order?} -> {
 GET  /api/cas/operations       -> {"operations":[{"op","label",
                                     "needs_variable","description"}]}
 
+POST /api/suggest {goal, hypotheses?: [[name, type]], limit?} -> {
+  "ok": bool, "goal", "message"?,
+  "suggestions": [{"name","display_name","title","statement","kind",
+                   "status","tactic","side_goals","why","score"}]
+}
+   (each suggestion has passed the same viability test the tactic itself
+    enforces, so it applies. `sorry` and the trust axioms are never
+    suggested. A goal with bare variables is typed by trying Nat, Int, Real,
+    Prop in turn; explicit binders override that.)
+
 POST /api/render {path?, content?} -> {
   "ok", "diagnostics": [...],
   "blocks": [{"name","display_name","title","kind","status","status_label",
@@ -268,6 +278,24 @@ normalize line endings/trailing ws only), graph (export SVG plots), export
 serve (uvicorn launch of epsilon.server.app:app), version.
 Manifest: `epsilon.toml` `[project] name/version/description` +
 `[dependencies]` (paths). `epsilon new NAME` scaffolds project + example.
+
+## Proof explorer - `epsilon/suggest.py`
+
+```python
+suggest(session, goal: Term, *, limit=12, include_axioms=True) -> [Suggestion]
+suggest_for_text(session, goal_src, *, hypotheses=None, limit=12)
+#   Suggestion: name, display_name, title, statement, kind, status, tactic,
+#               side_goals, score, why;  .as_dict() for the API
+```
+Matching is the test the tactics themselves perform - `apply`'s conclusion
+unification (including its refusal when an argument cannot be inferred) and
+`rw`'s strict pattern match against a subterm - so a suggestion applies. It
+is still a suggestion: nothing here proves anything, and running the tactic
+is what puts the result through the kernel.
+
+Never suggested: `Epsilon.sorry` and the trust axioms (they close any goal,
+which is precisely why offering them is wrong), and results whose conclusion
+is a bare variable (they match everything and so say nothing).
 
 ## Statuses (never conflate - section 27)
 

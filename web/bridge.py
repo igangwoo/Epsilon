@@ -220,3 +220,18 @@ def render(content, module="main"):
     out["ok"] = result.ok
     out["diagnostics"] = [_diag(d) for d in result.diagnostics]
     return json.dumps(out)
+
+
+def suggest(goal, hypotheses=None, limit=12):
+    """Library results that could act on this goal. Mirrors /api/suggest."""
+    from epsilon.suggest import suggest_for_text
+    try:
+        found = suggest_for_text(
+            _shared_session(), goal,
+            hypotheses=[(h[0], h[1]) for h in (hypotheses or []) if len(h) >= 2],
+            limit=max(1, min(50, int(limit or 12))))
+    except Exception as e:  # noqa: BLE001 - never raise into the browser
+        return json.dumps({"ok": False, "goal": goal, "message": str(e),
+                           "suggestions": []})
+    return json.dumps({"ok": True, "goal": goal,
+                       "suggestions": [s.as_dict() for s in found]})
