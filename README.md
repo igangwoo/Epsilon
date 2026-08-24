@@ -40,7 +40,16 @@ Epsilon 은 **수치적으로 확인한 것과 형식적으로 증명한 것을 
 
 ---
 
-## Quickstart
+## Try it in your browser — no install, no server
+
+The `web/` folder is a **static site**: Fork the repo, enable GitHub Pages
+(or import to Vercel), and you have a live Epsilon IDE at your own URL.
+The whole engine — kernel, elaborator, tactics, CAS, exporters — runs
+inside the visitor's browser via Pyodide. See
+[web/DEPLOY.md](web/DEPLOY.md) for the click-only steps (works from a
+managed Chromebook where you cannot install Python).
+
+## Quickstart (local, with Python)
 
 ```bash
 pip install -e ".[server,dev]"

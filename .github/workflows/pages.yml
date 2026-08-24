@@ -1,0 +1,61 @@
+name: Deploy Epsilon web IDE to GitHub Pages
+
+on:
+  push:
+    branches: [main, claude/math-language-proof-system-2kyqyu]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build Epsilon wheel
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build --wheel
+          # copy the freshly built wheel into the static site
+          rm -f web/epsilon_math-*.whl
+          cp dist/epsilon_math-*.whl web/
+
+      - name: Refresh static assets from the source of truth
+        run: |
+          cp epsilon/server/static/app.css web/app.css
+          cp epsilon/server/static/app.js web/app.js
+
+      - name: Sanity-check the site
+        run: |
+          test -f web/index.html
+          test -f web/boot.js
+          test -f web/bridge.py
+          ls web/epsilon_math-*.whl
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
