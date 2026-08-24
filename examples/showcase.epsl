@@ -1,0 +1,87 @@
+-- ═══════════════════════════════════════════════════════════════════
+-- Epsilon showcase — one file that the environment can, simultaneously:
+--   • recognize definitions and type-check them
+--   • check lemmas and theorems with the trusted kernel
+--   • build a proof tree and a theorem-dependency graph
+--   • compute a limit (CAS)   • plot functions   • run f(2) in the console
+--   • generate Python / LaTeX / MathML   • generate documentation
+-- Every result is labeled with an honest verification status.
+-- ═══════════════════════════════════════════════════════════════════
+
+-- ── definitions ──────────────────────────────────────────────────────
+
+/-- The sinc function, f(x) = sin(x)/x. -/
+def f (x : Real) : Real := Real.sin(x) / x
+
+/-- A quadratic. -/
+def g (x : Real) : Real := x^2 + 3*x + 1
+
+/-- Double of a natural number. -/
+def double (n : Nat) : Nat := 2 * n
+
+-- ── a user-defined operator ─────────────────────────────────────────
+
+infixl 65 "⊕" := Nat.add
+
+theorem oplus_is_add (a b : Nat) : a ⊕ b = a + b := by rfl
+
+-- ── an inductive type and a structure ───────────────────────────────
+
+/-- The three primary colors. -/
+inductive Color where
+  | red : Color
+  | green : Color
+  | blue : Color
+
+/-- A point in the plane. -/
+structure Point where
+  x : Real
+  y : Real
+
+-- ── proven theorems (checked by the kernel) ─────────────────────────
+
+/-- Addition on ℕ is commutative — proved by induction. -/
+theorem add_comm (a b : Nat) : a + b = b + a := by
+  induction b with
+  | zero => rw [Nat.add_zero, Nat.zero_add]
+  | succ n ih => rw [Nat.add_succ, Nat.succ_add, ih]
+
+/-- `double` distributes over addition. -/
+theorem double_distrib (a b : Nat) : double(a + b) = double(a) + double(b) := by
+  unfold double
+  rw [Nat.left_distrib]
+
+/-- A concrete inequality, decided by computation. -/
+theorem five_le_twelve : 5 ≤ 12 := by decide
+
+-- ── a symbolically-verified limit (CAS, NOT a kernel proof) ──────────
+
+/-- lim_{x→0} sin(x)/x = 1. Marked ✓ Symbolically Verified — the CAS
+    computed it; the kernel did not prove it, and Epsilon never pretends
+    otherwise. -/
+theorem sinc_limit : HasLimitAt(f, 0, 1) := by
+  cas
+
+-- ── continuity, via the analysis library ────────────────────────────
+
+/-- The linear function 3·x + 1 is continuous. The summand and factor
+    functions (3·(-) and the identity) are inferred by higher-order
+    pattern unification — you write the shape, Epsilon fills the holes. -/
+theorem linear_continuous : Continuous(λ (x : Real) => 3*x + 1) := by
+  apply Continuous.add
+  apply Continuous.mul
+  apply continuous_const
+  exact continuous_id
+  apply continuous_const
+
+-- ── inspect, evaluate, and plot ─────────────────────────────────────
+
+#check f
+#check Point.mk
+#eval double(21)
+#eval 2 + 3 * 4
+#eval (2 + 3 * 4) ^ 2
+#eval 7 ⊕ 35
+
+plot f, x ∈ [-15, 15]
+plot g, x ∈ [-5, 3]

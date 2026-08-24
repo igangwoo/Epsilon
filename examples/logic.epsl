@@ -1,0 +1,80 @@
+-- ═══════════════════════════════════════════════════════════════════
+-- Propositional and first-order logic, via natural deduction tactics.
+-- All ✓ Formally Proven (classical results list Classical.em as an axiom).
+-- ═══════════════════════════════════════════════════════════════════
+
+/-- Conjunction commutes. -/
+theorem and_comm (p q : Prop) : p ∧ q → q ∧ p := by
+  intro h
+  cases h with
+  | intro hp hq =>
+    split
+    exact hq
+    exact hp
+
+/-- Disjunction commutes. -/
+theorem or_comm (p q : Prop) : p ∨ q → q ∨ p := by
+  intro h
+  cases h with
+  | inl hp => right; exact hp
+  | inr hq => left; exact hq
+
+/-- Modus ponens. -/
+theorem mp (p q : Prop) : p → (p → q) → q := by
+  intro hp
+  intro hpq
+  apply hpq
+  exact hp
+
+/-- Currying / uncurrying via the ∧ eliminator. -/
+theorem and_imp (p q r : Prop) : (p ∧ q → r) → (p → q → r) := by
+  intro h
+  intro hp
+  intro hq
+  apply h
+  split
+  exact hp
+  exact hq
+
+/-- Transitivity of implication. -/
+theorem imp_trans (p q r : Prop) : (p → q) → (q → r) → (p → r) := by
+  intro hpq
+  intro hqr
+  intro hp
+  apply hqr
+  apply hpq
+  exact hp
+
+/-- Contraposition (constructive direction). -/
+theorem contrapositive (p q : Prop) : (p → q) → (¬q → ¬p) := by
+  intro h
+  intro hnq
+  intro hp
+  apply hnq
+  apply h
+  exact hp
+
+/-- Double-negation introduction. -/
+theorem dni (p : Prop) : p → ¬¬p := by
+  intro hp
+  intro hnp
+  contradiction
+
+/-- Double-negation elimination — classical, so it uses `Classical.em`. -/
+theorem dne (p : Prop) : ¬¬p → p := by
+  intro h
+  apply Classical.not_not
+  exact h
+
+/-- An existential: there is a natural number equal to 5. -/
+theorem exists_five : ∃ (n : Nat), n = 5 := by
+  exists 5
+
+/-- ∀ distributes into an implication chain. -/
+theorem forall_imp (p q : Nat → Prop) :
+    (∀ (n : Nat), p(n) → q(n)) → (∀ (n : Nat), p(n)) → (∀ (n : Nat), q(n)) := by
+  intro h
+  intro hp
+  intro n
+  apply h
+  apply hp

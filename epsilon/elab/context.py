@@ -236,6 +236,18 @@ class ElabContext:
             self.assign(b.id, a)
             return True
 
+        # Miller-pattern (higher-order) unification: ?f x y ... =?= rhs where
+        # the arguments are distinct bound-local constants and rhs mentions no
+        # other locals. Solve ?f := λ x y ..., abstracting those locals. This
+        # is what lets `apply Continuous.add` infer the summand functions.
+        for x, y in ((a, b), (b, a)):
+            xh, xargs = unfold_app(x)
+            if isinstance(xh, MVar) and xargs and not self._occurs(xh.id, y):
+                sol = self._solve_pattern(xh.id, xargs, y)
+                if sol is not None:
+                    self.assign(xh.id, sol)
+                    return True
+
         if isinstance(a, Sort) and isinstance(b, Sort):
             return a.level == b.level
         if isinstance(a, Lit) and isinstance(b, Lit):
@@ -301,6 +313,43 @@ class ElabContext:
             except KernelError:
                 return False
         return False
+
+    def _solve_pattern(self, mid: int, args: list[Term],
+                       rhs: Term) -> Optional[Term]:
+        """Solve `?mid arg0 arg1 ... = rhs` in the Miller pattern fragment.
+
+        Requires each arg to be a distinct local constant (a binder variable
+        in our encoding) and rhs to mention no local constant other than
+        those args. Returns λ args. rhs (with the args abstracted), or None
+        when the pattern condition fails."""
+        rhs = self.resolve_mvars(rhs)
+        names: list[str] = []
+        for a in args:
+            if not (isinstance(a, Const) and LOCAL_MARK in a.name):
+                return None
+            if a.name in names:
+                return None  # arguments must be distinct
+            names.append(a.name)
+        allowed = set(names)
+        for c in self._locals_in(rhs):
+            if c not in allowed:
+                return None  # rhs escapes the pattern's scope
+        # build λ (n0 : T0) ... . rhs[args -> de Bruijn]
+        body = rhs
+        for name in reversed(names):
+            ld = self.local_by_uname(name)
+            ty = ld.ty if ld is not None else self._guess_type(name)
+            body = Lam(name.split(LOCAL_MARK)[0], ty,
+                       abstract_const(body, name))
+        return body
+
+    def _locals_in(self, t: Term):
+        from ..kernel.term import constants_of
+        return [c for c in constants_of(t) if LOCAL_MARK in c]
+
+    def _guess_type(self, uname: str) -> Term:
+        from ..kernel.term import Sort
+        return Sort(1)
 
     def _safe_whnf(self, t: Term) -> Term:
         from ..kernel.term import has_mvar

@@ -1,0 +1,46 @@
+-- ═══════════════════════════════════════════════════════════════════
+-- Real analysis: continuity and limits, built on the axiomatized
+-- analysis library. Results below are ✓ Formally Proven relative to the
+-- analysis axioms they use (continuous_id, Continuous.add, ...).
+-- ═══════════════════════════════════════════════════════════════════
+
+/-- The identity function is continuous. -/
+theorem id_continuous : Continuous(λ (x : Real) => x) := by
+  exact continuous_id
+
+/-- A constant function is continuous. -/
+theorem const_continuous : Continuous(λ (x : Real) => 1) := by
+  apply continuous_const
+
+/-- x + x is continuous, by closure of continuity under addition. -/
+theorem sum_continuous : Continuous(λ (x : Real) => x + x) := by
+  apply Continuous.add
+  exact continuous_id
+  exact continuous_id
+
+/-- sin + cos is continuous (closure under addition, with the summand
+    functions inferred by higher-order pattern unification). -/
+theorem sin_plus_cos_continuous :
+    Continuous(λ (x : Real) => Real.sin(x) + Real.cos(x)) := by
+  apply Continuous.add
+  exact continuous_sin
+  exact continuous_cos
+
+/-- The limit of a constant is that constant. -/
+theorem const_limit (c : Real) : HasLimitAt(λ (x : Real) => c, 0, c) := by
+  apply hasLimitAt_const
+
+/-- The identity function tends to the point it is evaluated at. -/
+theorem id_limit : HasLimitAt(λ (x : Real) => x, 0, 0) := by
+  apply hasLimitAt_id
+
+-- The Pythagorean identity is available as a library axiom:
+#check Real.sin_sq_add_cos_sq
+
+-- Symbolic differentiation is a CAS operation, exposed via the console;
+-- and a limit computed by the CAS is Symbolically Verified, never Proven:
+theorem sinc_limit_symbolic :
+    HasLimitAt(λ (x : Real) => Real.sin(x) / x, 0, 1) := by
+  cas
+
+#check id_continuous
