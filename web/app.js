@@ -18,6 +18,17 @@
     String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const isMac = navigator.platform.toUpperCase().includes("MAC");
 
+  /* localStorage that never throws: a private window simply forgets */
+  const readJSON = (key, fallback) => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (e) { return fallback; }
+  };
+  const writeJSON = (key, value) => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  };
+
   async function api(method, path, body) {
     const opts = { method, headers: {} };
     if (body !== undefined) {
@@ -31,11 +42,15 @@
       toast("Network error: " + e.message, "err");
       throw e;
     }
-    if (!res.ok && res.status >= 500) {
-      toast("Server error " + res.status, "err");
-    }
     const ct = res.headers.get("content-type") || "";
-    return ct.includes("json") ? res.json() : res.text();
+    const data = ct.includes("json") ? await res.json() : await res.text();
+    if (!res.ok && data && typeof data === "object") {
+      // a refused request (a name collision, a path outside the workspace)
+      // used to fail silently; say what happened and let callers see it
+      if (!("ok" in data)) data.ok = false;
+      toast(data.detail || `Request failed (${res.status})`, "err");
+    }
+    return data;
   }
 
   /* ---------------- state ---------------- */
@@ -59,7 +74,12 @@
   }
 
   /* ===================================================================
-   * Syntax highlighting (regex tokenizer)
+   * Syntax highlighting
+   *
+   * One tokenizer, driven by a per-language table. Epsilon is the language
+   * this IDE is for, but a workspace holds the Python and C++ that the same
+   * piece of work turns into, plus the notes and data around it — so those
+   * open as themselves rather than as mis-parsed Epsilon.
    * =================================================================== */
   const KEYWORDS = new Set(("def define theorem lemma proposition corollary " +
     "example axiom constant inductive structure where import namespace end " +
@@ -70,87 +90,244 @@
     "unfold decide norm_num have show calc trivial contradiction exfalso " +
     "cas numeric ring linarith sorry clear auto").split(" "));
 
-  function highlight(src) {
-    // process line by line so we can track comment state and tactic context
+  const words = (s) => new Set(s.split(" "));
+
+  const SYNTAX = {
+    epsilon: {
+      line: ["--"], block: [["/-", "-/"]], nested: true,
+      strings: ['"'], directive: "#",
+      keywords: KEYWORDS, secondary: TACTICS,
+      identStart: /[A-Za-z_\u2115\u2124\u211a\u211d\u2102\u03c0]/,
+      identBody: /[A-Za-z0-9_'.\u2115\u2124\u211a\u211d\u2102\u03c0]/,
+      isType: (w) => /^[A-Z\u2115\u2124\u211a\u211d\u2102]/.test(w)
+        || /^[\u2115\u2124\u211a\u211d\u2102]/.test(w.split(".").pop()),
+      ops: "\u2200\u2203\u03bb\u2192\u2194\u2227\u2228\u00ac\u2264\u2265\u2260\u2208\u2209\u2286\u00d7\u221a\u00b7\u2218+-*/^=<>|",
+    },
+    python: {
+      line: ["#"], block: [['"""', '"""'], [", "]],
+      strings: ['"', "'"],
+      keywords: words("def class return if elif else for while break continue " +
+        "import from as pass raise try except finally with lambda yield " +
+        "global nonlocal assert del in is not and or None True False await async"),
+      secondary: words("print len range int float str list dict set tuple bool " +
+        "sum min max abs round sorted enumerate zip map filter open isinstance " +
+        "type super self __init__"),
+      isType: (w) => /^[A-Z]/.test(w),
+      ops: "+-*/%^=<>!&|~@",
+    },
+    cpp: {
+      line: ["//"], block: [["/*", "*/"]],
+      strings: ['"', "'"], directive: "#",
+      keywords: words("auto break case catch class const constexpr continue " +
+        "default delete do double else enum explicit extern false float for " +
+        "friend goto if inline int long namespace new nullptr operator private " +
+        "protected public return short signed sizeof static struct switch " +
+        "template this throw true try typedef typename union unsigned using " +
+        "virtual void volatile while bool char"),
+      secondary: words("std cout cin endl vector string map set pair size_t " +
+        "unique_ptr shared_ptr printf scanf malloc free"),
+      isType: (w) => /^[A-Z]/.test(w),
+      ops: "+-*/%^=<>!&|~?:",
+    },
+    javascript: {
+      line: ["//"], block: [["/*", "*/"]],
+      strings: ['"', "'", "`"],
+      keywords: words("async await break case catch class const continue " +
+        "debugger default delete do else export extends finally for function " +
+        "if import in instanceof let new of return static super switch this " +
+        "throw try typeof var void while with yield true false null undefined"),
+      secondary: words("console document window Math JSON Object Array Promise " +
+        "Number String Boolean Set Map require module exports"),
+      isType: (w) => /^[A-Z]/.test(w),
+      ops: "+-*/%^=<>!&|~?:",
+    },
+    shell: {
+      line: ["#"], block: [], strings: ['"', "'"],
+      keywords: words("if then else elif fi for while do done case esac " +
+        "function return export local source exit set unset"),
+      secondary: words("echo cd ls cat grep sed awk cp mv rm mkdir python pip git"),
+      ops: "|&<>$=",
+    },
+    json: {
+      line: [], block: [], strings: ['"'],
+      keywords: words("true false null"),
+      ops: ":,",
+    },
+    yaml: {
+      line: ["#"], block: [], strings: ['"', "'"],
+      keywords: words("true false null yes no on off"),
+      ops: ":-|>",
+    },
+    toml: {
+      line: ["#"], block: [], strings: ['"', "'"],
+      keywords: words("true false"),
+      ops: "=[]",
+    },
+    latex: {
+      line: ["%"], block: [], strings: [],
+      command: "\\",
+      keywords: new Set(), ops: "^_&$",
+    },
+    plain: { line: [], block: [], strings: [], keywords: new Set(), ops: "" },
+  };
+  SYNTAX.html = SYNTAX.plain;
+  SYNTAX.css = SYNTAX.plain;
+
+  function syntaxFor(language) {
+    return SYNTAX[language] || SYNTAX.plain;
+  }
+
+  function highlight(src, language) {
+    if (language === "markdown") return highlightMarkdown(src);
+    const spec = syntaxFor(language || "epsilon");
     const out = [];
-    const lines = src.split("\n");
-    let inBlock = 0;
-    for (let line of lines) {
-      out.push(highlightLine(line, () => inBlock, (v) => (inBlock = v)));
-    }
+    // block-comment / fenced-string state carried across lines
+    const st = { depth: 0, closer: null };
+    src.split("\n").forEach((line) => out.push(highlightLine(line, spec, st)));
     return out.join("\n");
   }
 
-  function highlightLine(line, getBlock, setBlock) {
+  function highlightLine(line, spec, st) {
     let res = "";
     let i = 0;
     const n = line.length;
+    const span = (cls, text) => `<span class="${cls}">${esc(text)}</span>`;
+
     while (i < n) {
-      if (getBlock() > 0) {
-        const endBlk = line.indexOf("-/", i);
-        if (endBlk === -1) {
-          res += `<span class="tok-comment">${esc(line.slice(i))}</span>`;
-          return res;
+      // inside a multi-line comment or triple-quoted string
+      if (st.depth > 0) {
+        const end = line.indexOf(st.closer, i);
+        if (end === -1) return res + span("tok-comment", line.slice(i));
+        res += span("tok-comment", line.slice(i, end + st.closer.length));
+        i = end + st.closer.length;
+        st.depth -= 1;
+        if (!st.depth) st.closer = null;
+        continue;
+      }
+
+      const rest = line.slice(i);
+
+      const lineComment = (spec.line || []).find((c) => rest.startsWith(c));
+      if (lineComment) return res + span("tok-comment", rest);
+
+      const opener = (spec.block || []).find(([o]) => rest.startsWith(o));
+      if (opener) {
+        const [open, close] = opener;
+        const end = line.indexOf(close, i + open.length);
+        if (end === -1) {
+          st.depth = 1;
+          st.closer = close;
+          return res + span("tok-comment", rest);
         }
-        res += `<span class="tok-comment">${esc(line.slice(i, endBlk + 2))}</span>`;
-        setBlock(getBlock() - 1);
-        i = endBlk + 2;
+        // Epsilon nests its block comments; C-family ones do not
+        if (spec.nested) {
+          st.depth += 1;
+          st.closer = close;
+          res += span("tok-comment", line.slice(i, i + open.length));
+          i += open.length;
+          continue;
+        }
+        res += span("tok-comment", line.slice(i, end + close.length));
+        i = end + close.length;
         continue;
       }
+
       const ch = line[i];
-      const two = line.slice(i, i + 2);
-      if (two === "--") {
-        res += `<span class="tok-comment">${esc(line.slice(i))}</span>`;
-        return res;
-      }
-      if (two === "/-") {
-        setBlock(getBlock() + 1);
-        continue;
-      }
-      if (ch === '"') {
+
+      if ((spec.strings || []).includes(ch)) {
         let j = i + 1;
-        while (j < n && line[j] !== '"') { if (line[j] === "\\") j++; j++; }
-        res += `<span class="tok-string">${esc(line.slice(i, j + 1))}</span>`;
+        while (j < n && line[j] !== ch) { if (line[j] === "\\") j++; j++; }
+        res += span("tok-string", line.slice(i, Math.min(j + 1, n)));
         i = j + 1;
         continue;
       }
-      if (ch === "#") {
+
+      if (spec.command && ch === "\\") {
         let j = i + 1;
-        while (j < n && /[a-zA-Z]/.test(line[j])) j++;
-        res += `<span class="tok-directive">${esc(line.slice(i, j))}</span>`;
+        while (j < n && /[A-Za-z]/.test(line[j])) j++;
+        res += span("tok-keyword", line.slice(i, Math.max(j, i + 2)));
+        i = Math.max(j, i + 2);
+        continue;
+      }
+
+      if (spec.directive && ch === spec.directive) {
+        let j = i + 1;
+        while (j < n && /[a-zA-Z_]/.test(line[j])) j++;
+        res += span("tok-directive", line.slice(i, j));
         i = j;
         continue;
       }
+
       if (/[0-9]/.test(ch)) {
         let j = i;
-        while (j < n && /[0-9.]/.test(line[j])) j++;
-        res += `<span class="tok-num">${esc(line.slice(i, j))}</span>`;
+        while (j < n && /[0-9._a-fA-FxX]/.test(line[j])) j++;
+        res += span("tok-num", line.slice(i, j));
         i = j;
         continue;
       }
-      if (/[A-Za-z_ℕℤℚℝℂπ]/.test(ch)) {
+
+      const startRe = spec.identStart || /[A-Za-z_]/;
+      if (startRe.test(ch)) {
+        const bodyRe = spec.identBody || /[A-Za-z0-9_]/;
         let j = i;
-        while (j < n && /[A-Za-z0-9_'.ℕℤℚℝℂπ]/.test(line[j])) j++;
+        while (j < n && bodyRe.test(line[j])) j++;
         const word = line.slice(i, j);
-        const bare = word.split(".").pop();
         let cls = "";
-        if (KEYWORDS.has(word)) cls = "tok-keyword";
-        else if (TACTICS.has(word)) cls = "tok-tactic";
-        else if (/^[A-Zℕℤℚℝℂ]/.test(word) || /^[ℕℤℚℝℂ]/.test(bare)) cls = "tok-type";
-        res += cls ? `<span class="${cls}">${esc(word)}</span>` : esc(word);
+        if (spec.keywords && spec.keywords.has(word)) cls = "tok-keyword";
+        else if (spec.secondary && spec.secondary.has(word)) cls = "tok-tactic";
+        else if (spec.isType && spec.isType(word)) cls = "tok-type";
+        res += cls ? span(cls, word) : esc(word);
         i = j;
         continue;
       }
-      if ("∀∃λ→↔∧∨¬≤≥≠∈∉⊆×√·∘".includes(ch) ||
-          "+-*/^=<>|".includes(ch)) {
-        res += `<span class="tok-op">${esc(ch)}</span>`;
+
+      if ((spec.ops || "").includes(ch)) {
+        res += span("tok-op", ch);
         i++;
         continue;
       }
+
       res += esc(ch);
       i++;
     }
     return res;
+  }
+
+  /** Markdown is prose with markup, not code — it gets its own pass. */
+  function highlightMarkdown(src) {
+    let fenced = false;
+    return src.split("\n").map((line) => {
+      if (/^\s*```/.test(line)) {
+        fenced = !fenced;
+        return `<span class="tok-directive">${esc(line)}</span>`;
+      }
+      if (fenced) return `<span class="tok-string">${esc(line)}</span>`;
+      if (/^\s{0,3}#{1,6}\s/.test(line))
+        return `<span class="tok-keyword">${esc(line)}</span>`;
+      if (/^\s*>/.test(line)) return `<span class="tok-comment">${esc(line)}</span>`;
+      if (/^\s*([-*+]|\d+\.)\s/.test(line)) {
+        const m = line.match(/^(\s*([-*+]|\d+\.)\s)/);
+        return `<span class="tok-op">${esc(m[1])}</span>` + inlineMarkdown(line.slice(m[1].length));
+      }
+      return inlineMarkdown(line);
+    }).join("\n");
+  }
+
+  function inlineMarkdown(text) {
+    let out = "";
+    let i = 0;
+    while (i < text.length) {
+      const rest = text.slice(i);
+      let m = rest.match(/^`[^`]+`/);
+      if (m) { out += `<span class="tok-string">${esc(m[0])}</span>`; i += m[0].length; continue; }
+      m = rest.match(/^\*\*[^*]+\*\*|^__[^_]+__/);
+      if (m) { out += `<span class="tok-type">${esc(m[0])}</span>`; i += m[0].length; continue; }
+      m = rest.match(/^\[[^\]]*\]\([^)]*\)/);
+      if (m) { out += `<span class="tok-directive">${esc(m[0])}</span>`; i += m[0].length; continue; }
+      out += esc(text[i]);
+      i++;
+    }
+    return out;
   }
 
   /* ===================================================================
@@ -164,7 +341,9 @@
 
   function renderEditor() {
     const src = editor.value;
-    highlightCode.innerHTML = highlight(src);
+    const lang = currentLanguage();
+    editor.dataset.language = lang;
+    highlightCode.innerHTML = highlight(src, lang);
     const lineCount = src.split("\n").length;
     let g = "";
     for (let i = 1; i <= lineCount; i++) {
@@ -268,9 +447,36 @@
     return state.tabs.find((t) => t.path === state.active);
   }
 
+  /** Extension -> editor language. Mirrors the server's `_language_of`. */
+  const EXT_LANGUAGE = {
+    epsl: "epsilon", py: "python", pyi: "python",
+    cpp: "cpp", cc: "cpp", cxx: "cpp", c: "cpp", h: "cpp", hpp: "cpp",
+    md: "markdown", json: "json", toml: "toml", ini: "toml", cfg: "toml",
+    yaml: "yaml", yml: "yaml", tex: "latex", js: "javascript",
+    ts: "javascript", html: "html", css: "css", sh: "shell",
+  };
+
+  function languageOf(path) {
+    const entry = (state.entries || []).find((e) => e.path === path);
+    if (entry && entry.language) return entry.language;
+    const dot = path.lastIndexOf(".");
+    return (dot < 0 ? "" : EXT_LANGUAGE[path.slice(dot + 1).toLowerCase()]) || "plain";
+  }
+
+  /** The language of the file in the editor right now. */
+  function currentLanguage() {
+    const tab = currentTab();
+    return tab ? tab.language || languageOf(tab.path) : "epsilon";
+  }
+
+  /** Only Epsilon files go through the proof engine. */
+  const isEpsilon = () => currentLanguage() === "epsilon";
+
   async function loadFiles() {
     const r = await api("GET", "/api/files");
     state.files = r.files || [];
+    state.entries = r.entries || (state.files || []).map((f) =>
+      ({ ...f, kind: "file", language: "epsilon", editable: true }));
     renderFileList();
     if (state.files.length === 0) {
       await api("POST", "/api/file", { path: "main.epsl", content: "" });
@@ -279,28 +485,258 @@
     if (!state.active) openFile(state.files[0].path);
   }
 
+  /* ---- explorer tree ---- */
+
+  const COLLAPSE_KEY = "epsilon.explorer.collapsed.v1";
+  const collapsed = new Set(readJSON(COLLAPSE_KEY, []));
+  function persistCollapsed() {
+    writeJSON(COLLAPSE_KEY, Array.from(collapsed));
+  }
+
+  /** A small glyph per language — enough to tell files apart at a glance. */
+  const FILE_GLYPH = {
+    epsilon: "ε", python: "py", cpp: "c++", markdown: "md", json: "{}",
+    toml: "cfg", yaml: "yml", latex: "TeX", javascript: "js", html: "<>",
+    css: "css", shell: "$",
+  };
+
+  /** Build a nested tree from the flat entry list the API returns. */
+  function fileTree(entries) {
+    const root = { children: new Map() };
+    const nodeAt = (path, kind, entry) => {
+      const parts = path.split("/");
+      let node = root;
+      parts.forEach((part, i) => {
+        const here = parts.slice(0, i + 1).join("/");
+        if (!node.children.has(part)) {
+          node.children.set(part, {
+            name: part, path: here, children: new Map(),
+            kind: i === parts.length - 1 ? kind : "folder",
+            entry: i === parts.length - 1 ? entry : null,
+          });
+        }
+        node = node.children.get(part);
+      });
+      return node;
+    };
+    entries.forEach((e) => nodeAt(e.path, e.kind, e));
+    return root;
+  }
+
+  function matchesFilter(node, needle) {
+    if (!needle) return true;
+    if (node.path.toLowerCase().includes(needle)) return true;
+    return Array.from(node.children.values())
+      .some((c) => matchesFilter(c, needle));
+  }
+
   function renderFileList() {
     const list = $("#fileList");
     list.innerHTML = "";
-    (state.files || []).forEach((f) => {
-      const item = el("li", "file-item");
-      const tab = state.tabs.find((t) => t.path === f.path);
-      if (tab && tab.dirty) item.classList.add("dirty");
-      if (f.path === state.active) item.classList.add("active");
-      item.innerHTML = `<svg viewBox="0 0 16 16" width="13" height="13">
-        <path d="M4 1h5l3 3v11H4z" fill="none" stroke="currentColor"
-        stroke-width="1.2"/></svg><span>${esc(f.name)}</span>
-        <span class="dirty"></span>`;
-      item.onclick = () => openFile(f.path);
-      list.appendChild(item);
+    const needle = (state.fileFilter || "").trim().toLowerCase();
+    const root = fileTree(state.entries || []);
+
+    const sorted = (node) => Array.from(node.children.values()).sort((a, b) =>
+      (a.kind === b.kind ? 0 : a.kind === "folder" ? -1 : 1)
+      || a.name.localeCompare(b.name));
+
+    const walk = (node, depth) => {
+      sorted(node).forEach((child) => {
+        if (!matchesFilter(child, needle)) return;
+        list.appendChild(rowFor(child, depth));
+        // a filter expands what it matches, so a hit is never hidden
+        const open = needle || !collapsed.has(child.path);
+        if (child.kind === "folder" && open) walk(child, depth + 1);
+      });
+    };
+    walk(root, 0);
+
+    if (!list.children.length) {
+      const empty = el("li", "file-empty",
+        needle ? "No file matches that filter." : "No files yet.");
+      list.appendChild(empty);
+    }
+  }
+
+  function rowFor(node, depth) {
+    const item = el("li", "file-item" + (node.kind === "folder" ? " folder" : ""));
+    item.style.paddingLeft = 8 + depth * 13 + "px";
+    item.dataset.path = node.path;
+    item.dataset.kind = node.kind;
+    item.title = node.path;
+
+    if (node.kind === "folder") {
+      const twisty = el("span", "twisty", collapsed.has(node.path) ? "▸" : "▾");
+      item.appendChild(twisty);
+      item.appendChild(el("span", "file-glyph folder-glyph", "▪"));
+    } else {
+      const lang = (node.entry && node.entry.language) || "plain";
+      item.appendChild(el("span", "file-glyph lang-" + lang,
+                          FILE_GLYPH[lang] || "·"));
+    }
+
+    item.appendChild(el("span", "file-name", node.name));
+
+    const tab = state.tabs.find((t) => t.path === node.path);
+    if (tab && tab.dirty) item.classList.add("dirty");
+    if (node.path === state.active) item.classList.add("active");
+    item.appendChild(el("span", "dirty"));
+
+    item.onclick = () => {
+      if (node.kind === "folder") {
+        if (collapsed.has(node.path)) collapsed.delete(node.path);
+        else collapsed.add(node.path);
+        persistCollapsed();
+        renderFileList();
+      } else if (node.entry && node.entry.editable === false) {
+        toast(node.name + " is not a text file", "warn");
+      } else {
+        openFile(node.path);
+      }
+    };
+    item.oncontextmenu = (e) => {
+      e.preventDefault();
+      openContextMenu(e.clientX, e.clientY, node);
+    };
+
+    wireFileDrag(item, node);
+    return item;
+  }
+
+  /* ---- drag a file onto a folder to move it ---- */
+
+  function wireFileDrag(item, node) {
+    item.draggable = true;
+    item.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/epsilon-path", node.path);
+      e.dataTransfer.effectAllowed = "move";
     });
+    if (node.kind !== "folder") return;
+    item.addEventListener("dragover", (e) => {
+      if (!e.dataTransfer.types.includes("text/epsilon-path")) return;
+      e.preventDefault();
+      item.classList.add("drop-target");
+    });
+    item.addEventListener("dragleave", () => item.classList.remove("drop-target"));
+    item.addEventListener("drop", (e) => {
+      e.preventDefault();
+      item.classList.remove("drop-target");
+      const from = e.dataTransfer.getData("text/epsilon-path");
+      if (!from) return;
+      moveEntry(from, node.path + "/" + from.split("/").pop());
+    });
+  }
+
+  /* ---- explorer commands ---- */
+
+  /** The folder a new entry should land in, given what is selected. */
+  function currentFolder(node) {
+    if (node) return node.kind === "folder" ? node.path
+      : node.path.split("/").slice(0, -1).join("/");
+    if (state.active) return state.active.split("/").slice(0, -1).join("/");
+    return "";
+  }
+
+  const joinPath = (dir, name) => (dir ? dir + "/" + name : name);
+
+  async function moveEntry(from, to) {
+    if (!to || from === to) return;
+    const r = await api("POST", "/api/rename", { path: from, to });
+    if (r && r.ok === false) return;
+    // follow the file: open tabs and the active file keep pointing at it
+    state.tabs.forEach((t) => {
+      if (t.path === from) t.path = to;
+      else if (t.path.startsWith(from + "/")) t.path = to + t.path.slice(from.length);
+    });
+    if (state.active === from) state.active = to;
+    else if (state.active && state.active.startsWith(from + "/"))
+      state.active = to + state.active.slice(from.length);
+    if (collapsed.delete(from)) { collapsed.add(to); persistCollapsed(); }
+    await loadFiles();
+    renderTabs();
+    toast("Moved to " + to, "ok");
+  }
+
+  async function renameEntry(node) {
+    const name = prompt("Rename " + node.name + " to:", node.name);
+    if (!name || name === node.name) return;
+    const dir = node.path.split("/").slice(0, -1).join("/");
+    await moveEntry(node.path, joinPath(dir, name));
+  }
+
+  async function duplicateEntry(node) {
+    const r = await api("POST", "/api/duplicate", { path: node.path });
+    await loadFiles();
+    if (r && r.path) toast("Duplicated to " + r.path, "ok");
+  }
+
+  async function deleteEntry(node) {
+    const what = node.kind === "folder"
+      ? `Delete the folder "${node.name}" and everything in it?`
+      : `Delete "${node.name}"?`;
+    if (!confirm(what)) return;
+    if (node.kind === "folder") {
+      await api("DELETE", "/api/folder?path=" + encodeURIComponent(node.path));
+      state.tabs.filter((t) => t.path.startsWith(node.path + "/"))
+        .forEach((t) => closeTab(t.path));
+    } else {
+      await api("DELETE", "/api/file?path=" + encodeURIComponent(node.path));
+      closeTab(node.path);
+    }
+    await loadFiles();
+    toast("Deleted " + node.name, "ok");
+  }
+
+  async function newFolder(node) {
+    const name = prompt("New folder name:", "untitled");
+    if (!name) return;
+    await api("POST", "/api/folder", { path: joinPath(currentFolder(node), name) });
+    await loadFiles();
+  }
+
+  /* ---- context menu ---- */
+
+  function openContextMenu(x, y, node) {
+    const menu = $("#ctxMenu");
+    menu.innerHTML = "";
+    const add = (label, run, danger) => {
+      const b = el("button", "ctx-item" + (danger ? " danger" : ""), label);
+      b.onclick = () => { closeContextMenu(); run(); };
+      menu.appendChild(b);
+    };
+    add("New file…", () => newFile(node));
+    add("New folder…", () => newFolder(node));
+    // the workspace root is a place to put things, not a thing itself
+    if (node.path) {
+      menu.appendChild(el("div", "ctx-sep"));
+      add("Rename…", () => renameEntry(node));
+      add("Duplicate", () => duplicateEntry(node));
+      add("Copy path", () => {
+        if (navigator.clipboard) navigator.clipboard.writeText(node.path);
+        toast("Copied " + node.path, "ok");
+      });
+      menu.appendChild(el("div", "ctx-sep"));
+      add("Delete", () => deleteEntry(node), true);
+    }
+
+    menu.classList.remove("hidden");
+    // keep the menu on screen when the click lands near an edge
+    const r = menu.getBoundingClientRect();
+    menu.style.left = Math.min(x, window.innerWidth - r.width - 8) + "px";
+    menu.style.top = Math.min(y, window.innerHeight - r.height - 8) + "px";
+  }
+
+  function closeContextMenu() {
+    const menu = $("#ctxMenu");
+    if (menu) menu.classList.add("hidden");
   }
 
   async function openFile(path) {
     let tab = state.tabs.find((t) => t.path === path);
     if (!tab) {
       const r = await api("GET", "/api/file?path=" + encodeURIComponent(path));
-      tab = { path, content: r.content || "", saved: r.content || "", dirty: false };
+      tab = { path, content: r.content || "", saved: r.content || "",
+              dirty: false, language: languageOf(path) };
       state.tabs.push(tab);
     }
     state.active = path;
@@ -318,7 +754,11 @@
     state.tabs.forEach((t) => {
       const tab = el("div", "tab" + (t.path === state.active ? " active" : ""));
       const name = t.path.split("/").pop();
+      const lang = t.language || languageOf(t.path);
+      tab.appendChild(el("span", "file-glyph lang-" + lang,
+                         FILE_GLYPH[lang] || "·"));
       tab.appendChild(el("span", null, name));
+      tab.title = t.path;
       if (t.dirty) tab.appendChild(el("span", "dirty"));
       const close = el("span", "close", "×");
       close.onclick = (e) => {
@@ -356,11 +796,16 @@
     runCheck();
   }
 
-  async function newFile() {
+  async function newFile(node) {
     const name = prompt("New file name:", "untitled.epsl");
     if (!name) return;
-    const path = name.endsWith(".epsl") ? name : name + ".epsl";
-    await api("POST", "/api/file", { path, content: "" });
+    // no extension means Epsilon — the language this IDE is for
+    const path = joinPath(currentFolder(node),
+                          /\.[^./]+$/.test(name) ? name : name + ".epsl");
+    const r = await api("POST", "/api/file", { path, content: "" });
+    if (r && r.ok === false) return;
+    const dir = path.split("/").slice(0, -1).join("/");
+    if (dir && collapsed.delete(dir)) persistCollapsed();
     await loadFiles();
     openFile(path);
   }
@@ -377,6 +822,17 @@
   async function runCheck() {
     const tab = currentTab();
     if (!tab) return;
+    // the proof engine only understands Epsilon. Reporting bogus Epsilon
+    // errors against a Python file would be worse than reporting nothing.
+    if (!isEpsilon()) {
+      errorLines = new Set();
+      renderEditor();
+      renderProblems([]);
+      setCheckState("na");
+      // the theorem list, plots and graph still describe the last Epsilon
+      // file checked, which is the useful thing to keep on screen
+      return;
+    }
     setCheckState("running");
     let r;
     try {
@@ -402,13 +858,29 @@
     updateStatusCounts(r.theorems || []);
   }
 
+  const LANGUAGE_LABEL = {
+    epsilon: "Epsilon", python: "Python", cpp: "C++", markdown: "Markdown",
+    json: "JSON", toml: "TOML", yaml: "YAML", latex: "LaTeX",
+    javascript: "JavaScript", shell: "Shell", html: "HTML", css: "CSS",
+    plain: "Plain text",
+  };
+
   function setCheckState(s) {
     const chip = $("#checkState");
     chip.className = "chip " + (s === "ok" ? "ok" : s === "error" ? "err" :
       s === "running" ? "running" : "");
     chip.textContent = s === "running" ? "checking…" :
-      s === "ok" ? "✓ checked" : s === "error" ? "✗ errors" : "ready";
+      s === "ok" ? "✓ checked" : s === "error" ? "✗ errors" :
+      s === "na" ? "not an Epsilon file" : "ready";
     $("#checkBtn").classList.toggle("running", s === "running");
+    // the check button is meaningless outside Epsilon; say so rather than
+    // leaving a live-looking control that does nothing
+    const epsl = isEpsilon();
+    $("#checkBtn").disabled = !epsl;
+    $("#checkBtn").title = epsl ? "Check (Ctrl/Cmd+Enter)"
+      : "Checking applies to Epsilon files";
+    const label = $("#editorLanguage");
+    if (label) label.textContent = LANGUAGE_LABEL[currentLanguage()] || "Plain text";
   }
 
   function updateStatusCounts(theorems) {
@@ -1263,7 +1735,7 @@
     const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
     root.setAttribute("data-theme", next);
     try { localStorage.setItem("epsilon-theme", next); } catch (e) {}
-    if (!graphCanvas.classList.contains("hidden")) drawGraph();
+    if (EpsilonPanes.isOpen("deps")) drawGraph();
   }
 
   /* ===================================================================
@@ -1393,6 +1865,9 @@
   }
 
   async function openAutocomplete(force) {
+    // completions come from the Epsilon environment; there is nothing
+    // honest to offer for a Python or C++ buffer yet
+    if (!isEpsilon()) return closeAutocomplete();
     const { text, start } = currentPrefix();
     if (!force && text.length < 2) return closeAutocomplete();
     const token = ++ac.token;
@@ -1486,6 +1961,7 @@
   }
 
   async function showTipFor(word, clientX, clientY) {
+    if (!isEpsilon()) return;
     let r;
     try {
       r = await api("GET", "/api/hover?name=" + encodeURIComponent(word));
@@ -1547,6 +2023,7 @@
   }
 
   async function goToDefinition(word) {
+    if (!isEpsilon()) return;
     let r;
     try {
       r = await api("GET", "/api/definition?name=" + encodeURIComponent(word));
@@ -1708,6 +2185,7 @@
 
     // --- hover ---
     editor.addEventListener("mousemove", (ev) => {
+      if (!isEpsilon()) { editor.classList.remove("linking"); hideTip(); return; }
       if (ev.ctrlKey || ev.metaKey) editor.classList.add("linking");
       else editor.classList.remove("linking");
       clearTimeout(hoverTimer);
@@ -1777,7 +2255,7 @@
     window.addEventListener("resize", () => {
       measureText();
       updateCaret();
-      if (!graphCanvas.classList.contains("hidden")) drawGraph();
+      if (EpsilonPanes.isOpen("deps")) drawGraph();
     });
   }
 
@@ -1832,7 +2310,32 @@
   function wire() {
     $("#checkBtn").onclick = runCheck;
     $("#themeBtn").onclick = toggleTheme;
-    $("#newFileBtn").onclick = newFile;
+    $("#newFileBtn").onclick = () => newFile();
+    $("#newFolderBtn").onclick = () => newFolder();
+    $("#refreshFilesBtn").onclick = () => loadFiles();
+    $("#collapseAllBtn").onclick = () => {
+      (state.entries || []).forEach((e) => {
+        if (e.kind === "folder") collapsed.add(e.path);
+      });
+      persistCollapsed();
+      renderFileList();
+    };
+    $("#fileFilter").oninput = (e) => {
+      state.fileFilter = e.target.value;
+      renderFileList();
+    };
+    // the context menu closes on any click elsewhere, or on Escape
+    document.addEventListener("mousedown", (e) => {
+      const menu = $("#ctxMenu");
+      if (menu && !menu.classList.contains("hidden") && !menu.contains(e.target))
+        closeContextMenu();
+    });
+    $("#fileList").oncontextmenu = (e) => {
+      if (e.target.closest(".file-item")) return;   // handled per row
+      e.preventDefault();
+      openContextMenu(e.clientX, e.clientY,
+                      { name: "workspace", path: "", kind: "folder" });
+    };
     $("#paletteBtn").onclick = () => openPalette("cmd");
     $$(".act[data-view]").forEach((a) =>
       (a.onclick = () => switchView(a.dataset.view)));
@@ -1843,10 +2346,10 @@
       else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveCurrent(); }
       else if (mod && e.shiftKey && e.key.toLowerCase() === "p") { e.preventDefault(); openPalette("cmd"); }
       else if (mod && e.key.toLowerCase() === "p") { e.preventDefault(); openPalette("file"); }
-      else if (e.key === "Escape") closePalette();
+      else if (e.key === "Escape") { closePalette(); closeContextMenu(); }
     });
     window.addEventListener("resize", () => {
-      if (!graphCanvas.classList.contains("hidden")) drawGraph();
+      if (EpsilonPanes.isOpen("deps")) drawGraph();
     });
   }
 

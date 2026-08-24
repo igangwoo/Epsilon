@@ -126,11 +126,20 @@ env var EPSILON_WORKSPACE). Server keeps ONE Session per workspace check run
 All responses JSON. Spans are `[l0,c0,l1,c1]` 1-based.
 
 ```
-GET  /api/files                 -> {"files": [{"name": "main.epsl", "path": "main.epsl"}]}
+GET  /api/files                 -> {"files":   [{"name","path"}],          # .epsl only
+                                    "entries": [{"name","path","kind",     # whole tree
+                                                 "language","size","editable"}]}
+   (kind: "file"|"folder"; language: epsilon/python/cpp/markdown/json/... ,
+    "plain" when unknown; editable false for binaries and very large files)
 GET  /api/file?path=..          -> {"path":.., "content": str}
 PUT  /api/file  {path, content} -> {"ok": true}
 POST /api/file  {path}          -> {"ok": true}          (create empty)
 DELETE /api/file?path=..        -> {"ok": true}
+POST /api/folder {path}         -> {"ok": true, "path": str}
+DELETE /api/folder?path=..      -> {"ok": true}          (recursive; root refused)
+POST /api/rename {path, to}     -> {"ok": true, "path": to}
+   (404 unknown, 409 name taken, 400 outside the workspace or into itself)
+POST /api/duplicate {path}      -> {"ok": true, "path": "<name> copy.<ext>"}
 
 POST /api/check {path?, content?} -> {
   "ok": bool,
@@ -193,6 +202,11 @@ tab, then loads the *unmodified* `app.js`.
 
 `python3 scripts/build_web.py [--wheel]` regenerates it. `tests/test_web_build.py`
 fails if the two builds drift.
+
+`web/vfs.js` is the browser workspace: the file/folder/rename/duplicate half
+of the API above, against a `{path: content}` map in localStorage, with the
+same status codes for the same requests. `tests/test_web_vfs.py` runs the
+same request sequences through both implementations and compares them.
 
 ## CLI - `epsilon/cli.py`
 

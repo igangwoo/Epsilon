@@ -77,3 +77,46 @@ def test_no_external_resources():
 @pytest.mark.parametrize("name", ["panes.js", "app.js", "app.css", "index.html"])
 def test_asset_present(name):
     assert (STATIC / name).exists()
+
+
+def test_editor_languages_match_the_server():
+    """The editor's extension table must agree with `_language_of`."""
+    from epsilon.server.app import _language_of
+    app = APP.read_text()
+    block = re.search(r"const EXT_LANGUAGE = \{(.*?)\n  \};", app, re.S)
+    assert block, "EXT_LANGUAGE not found in app.js"
+    pairs = re.findall(r'(\w+):\s*"([a-z+]+)"', block.group(1))
+    assert pairs
+    for ext, language in pairs:
+        assert _language_of("f." + ext) == language, (
+            f".{ext}: editor says {language}, server says {_language_of('f.' + ext)}")
+
+
+def test_every_editor_language_has_a_syntax_entry():
+    app = APP.read_text()
+    block = re.search(r"const EXT_LANGUAGE = \{(.*?)\n  \};", app, re.S)
+    languages = {lang for _, lang in re.findall(r'(\w+):\s*"([a-z+]+)"', block.group(1))}
+    syntax = set(re.findall(r"^    ([a-z]+): \{", app, re.M))
+    syntax |= set(re.findall(r"SYNTAX\.([a-z]+) = ", app))
+    # markdown has its own pass rather than a SYNTAX table entry
+    missing = sorted(languages - syntax - {"markdown"})
+    assert not missing, f"languages with no highlighting rules: {missing}"
+
+
+def test_every_language_has_a_status_bar_label():
+    app = APP.read_text()
+    block = re.search(r"const LANGUAGE_LABEL = \{(.*?)\n  \};", app, re.S)
+    assert block, "LANGUAGE_LABEL not found in app.js"
+    labelled = set(re.findall(r'(\w+):\s*"', block.group(1)))
+    ext_block = re.search(r"const EXT_LANGUAGE = \{(.*?)\n  \};", app, re.S)
+    languages = {lang for _, lang in re.findall(r'(\w+):\s*"([a-z+]+)"', ext_block.group(1))}
+    assert not sorted(languages - labelled)
+
+
+def test_check_is_gated_to_epsilon():
+    """A Python buffer must never be reported on by the proof engine."""
+    app = APP.read_text()
+    assert "if (!isEpsilon())" in app
+    run_check = app[app.index("async function runCheck()"):]
+    run_check = run_check[:run_check.index("\n  function setCheckState")]
+    assert "isEpsilon()" in run_check, "runCheck does not gate on the language"

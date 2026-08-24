@@ -11,7 +11,6 @@
   const PYODIDE_VERSION = "0.26.2";
   const PYODIDE_CDN = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
   const WHEEL = "./epsilon_math-0.1.0-py3-none-any.whl";
-  const LS_FILES = "epsilon.files.v1";
 
   const realFetch = window.fetch.bind(window);
   const boot = document.getElementById("boot");
@@ -49,22 +48,9 @@ theorem two_le_three : 2 ≤ 3 := by decide
 plot Real.sin, x ∈ [-6, 6]
 `;
 
-  /* -------- localStorage virtual filesystem -------- */
-  function loadFiles() {
-    try {
-      const raw = localStorage.getItem(LS_FILES);
-      if (raw) return JSON.parse(raw);
-    } catch (e) {}
-    return null;
-  }
-  function saveFiles(files) {
-    try { localStorage.setItem(LS_FILES, JSON.stringify(files)); } catch (e) {}
-  }
-  let FILES = loadFiles();
-  if (!FILES || !Object.keys(FILES).length) {
-    FILES = { "main.epsl": WELCOME };
-    saveFiles(FILES);
-  }
+  /* -------- the workspace (vfs.js) -------- */
+  const VFS = EpsilonVFS.create(window.localStorage, WELCOME);
+  const FILES = VFS.contents();
 
   /* -------- JSON Response helper -------- */
   function jsonResponse(obj, status) {
@@ -85,26 +71,10 @@ plot Real.sin, x ∈ [-6, 6]
       return jsonResponse(JSON.parse(PY.runPython("import bridge; bridge.meta()")));
     }
 
-    if (path === "/api/files") {
-      const files = Object.keys(FILES).sort().map((p) => ({
-        name: p.split("/").pop(), path: p }));
-      return jsonResponse({ files });
-    }
-
-    if (path === "/api/file") {
-      const p = u.searchParams.get("path") || body.path;
-      if (method === "GET") {
-        if (!(p in FILES)) return jsonResponse({ detail: "not found" }, 404);
-        return jsonResponse({ path: p, content: FILES[p] });
-      }
-      if (method === "PUT") { FILES[body.path] = body.content; saveFiles(FILES);
-        return jsonResponse({ ok: true }); }
-      if (method === "POST") {
-        if (!(body.path in FILES)) { FILES[body.path] = body.content || ""; saveFiles(FILES); }
-        return jsonResponse({ ok: true }); }
-      if (method === "DELETE") { delete FILES[p]; saveFiles(FILES);
-        return jsonResponse({ ok: true }); }
-    }
+    // files, folders, rename, duplicate — all of it lives in vfs.js
+    const fileOp = VFS.handle(path, method, body,
+                              { path: u.searchParams.get("path") });
+    if (fileOp) return jsonResponse(fileOp.body, fileOp.status);
 
     if (path === "/api/check") {
       const content = body.content != null ? body.content : (FILES[body.path] || "");

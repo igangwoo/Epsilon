@@ -30,27 +30,26 @@ jobs:
         with:
           enablement: true
 
-      - name: Build Epsilon wheel
+      - name: Build the site
         run: |
           python -m pip install --upgrade pip build
-          python -m build --wheel
-          # copy the freshly built wheel into the static site
-          rm -f web/epsilon_math-*.whl
-          cp dist/epsilon_math-*.whl web/
-
-      - name: Refresh static assets from the source of truth
-        run: |
-          cp epsilon/server/static/app.css web/app.css
-          cp epsilon/server/static/app.js web/app.js
+          # regenerates web/ from epsilon/server/static + web/shell,
+          # and rebuilds the wheel micropip installs in the browser
+          python scripts/build_web.py --wheel
 
       - name: Sanity-check the site
         run: |
           test -f web/index.html
           test -f web/boot.js
           test -f web/bridge.py
+          test -f web/app.js
+          test -f web/panes.js
           test -f web/app.css
           test -f web/web.css   # web-only overrides (not copied from server)
           ls web/epsilon_math-*.whl
+          # the generated site must match what is committed (the wheel is
+          # rebuilt here, so its bytes legitimately differ)
+          git diff --exit-code -- web/ ':(exclude)web/*.whl'
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

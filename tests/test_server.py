@@ -135,3 +135,107 @@ def test_completions_carry_mathematical_names(client):
     named = [i for i in items if i.get("display_name")]
     assert named, "expected at least one completion with a mathematical name"
     assert all("title" in i for i in items)
+
+
+# --------------------------------------------------------------------------
+# file explorer: folders, rename, duplicate
+# --------------------------------------------------------------------------
+
+def test_entries_list_folders_and_languages(client):
+    client.post("/api/folder", json={"path": "algebra"})
+    client.put("/api/file", json={"path": "algebra/rings.epsl", "content": ""})
+    client.put("/api/file", json={"path": "solve.py", "content": "x = 1\n"})
+    entries = client.get("/api/files").json()["entries"]
+    by_path = {e["path"]: e for e in entries}
+    assert by_path["algebra"]["kind"] == "folder"
+    assert by_path["algebra/rings.epsl"]["language"] == "epsilon"
+    assert by_path["solve.py"]["language"] == "python"
+    assert by_path["solve.py"]["editable"] is True
+
+
+def test_files_key_stays_epsilon_only(client):
+    """Existing callers must keep seeing exactly what they saw before."""
+    client.put("/api/file", json={"path": "notes.md", "content": "# hi"})
+    files = client.get("/api/files").json()["files"]
+    assert all(f["path"].endswith(".epsl") for f in files)
+
+
+def test_rename_file(client):
+    client.put("/api/file", json={"path": "old.epsl", "content": "def a : Nat := 1"})
+    r = client.post("/api/rename", json={"path": "old.epsl", "to": "new.epsl"})
+    assert r.json()["ok"] is True
+    assert client.get("/api/file", params={"path": "old.epsl"}).status_code == 404
+    assert client.get("/api/file",
+                      params={"path": "new.epsl"}).json()["content"] == "def a : Nat := 1"
+
+
+def test_rename_into_a_folder(client):
+    client.post("/api/folder", json={"path": "sub"})
+    client.put("/api/file", json={"path": "m.epsl", "content": "x"})
+    client.post("/api/rename", json={"path": "m.epsl", "to": "sub/m.epsl"})
+    assert client.get("/api/file", params={"path": "sub/m.epsl"}).json()["content"] == "x"
+
+
+def test_rename_onto_an_existing_name_is_refused(client):
+    client.put("/api/file", json={"path": "a.epsl", "content": "a"})
+    client.put("/api/file", json={"path": "b.epsl", "content": "b"})
+    r = client.post("/api/rename", json={"path": "a.epsl", "to": "b.epsl"})
+    assert r.status_code == 409
+    assert client.get("/api/file", params={"path": "b.epsl"}).json()["content"] == "b"
+
+
+def test_rename_cannot_escape_the_workspace(client):
+    client.put("/api/file", json={"path": "a.epsl", "content": "a"})
+    r = client.post("/api/rename", json={"path": "a.epsl", "to": "../escaped.epsl"})
+    assert r.status_code == 400
+
+
+def test_folder_cannot_move_inside_itself(client):
+    client.post("/api/folder", json={"path": "outer"})
+    r = client.post("/api/rename", json={"path": "outer", "to": "outer/inner"})
+    assert r.status_code == 400
+
+
+def test_duplicate_file_picks_a_free_name(client):
+    client.put("/api/file", json={"path": "thm.epsl", "content": "body"})
+    first = client.post("/api/duplicate", json={"path": "thm.epsl"}).json()
+    assert first["path"] == "thm copy.epsl"
+    second = client.post("/api/duplicate", json={"path": "thm.epsl"}).json()
+    assert second["path"] == "thm copy 2.epsl"
+    assert client.get("/api/file",
+                      params={"path": "thm copy.epsl"}).json()["content"] == "body"
+
+
+def test_duplicate_folder_copies_contents(client):
+    client.post("/api/folder", json={"path": "grp"})
+    client.put("/api/file", json={"path": "grp/g.epsl", "content": "g"})
+    dup = client.post("/api/duplicate", json={"path": "grp"}).json()["path"]
+    assert client.get("/api/file",
+                      params={"path": f"{dup}/g.epsl"}).json()["content"] == "g"
+
+
+def test_delete_folder_is_recursive(client):
+    client.post("/api/folder", json={"path": "tmp"})
+    client.put("/api/file", json={"path": "tmp/x.epsl", "content": "x"})
+    client.request("DELETE", "/api/folder", params={"path": "tmp"})
+    paths = {e["path"] for e in client.get("/api/files").json()["entries"]}
+    assert "tmp" not in paths and "tmp/x.epsl" not in paths
+
+
+def test_workspace_root_is_not_deletable(client):
+    r = client.request("DELETE", "/api/folder", params={"path": "."})
+    assert r.status_code == 400
+
+
+def test_hidden_and_cache_paths_are_not_listed(client):
+    import os
+    ws = client.get("/api/files")  # ensures the workspace exists
+    assert ws.status_code == 200
+    from epsilon.server.app import _workspace
+    root = _workspace()
+    os.makedirs(os.path.join(root, "__pycache__"), exist_ok=True)
+    open(os.path.join(root, "__pycache__", "junk.pyc"), "w").close()
+    open(os.path.join(root, ".secret"), "w").close()
+    paths = {e["path"] for e in client.get("/api/files").json()["entries"]}
+    assert not any(p.startswith("__pycache__") for p in paths)
+    assert ".secret" not in paths

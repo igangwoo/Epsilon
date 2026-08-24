@@ -96,8 +96,8 @@ and engine side.
 | Proof tree (Phase 2) | done — recorded tactic traces rendered per theorem |
 | Problems panel (Phase 1) | done — unified diagnostics, click to jump |
 | Command palette (Phase 1) | done — commands, files, exports |
-| Universal editor (Phase 1) | Epsilon only; multi-language pending |
-| File explorer (Phase 1) | create/open/delete; rename, folders, icons pending |
+| Universal editor (Phase 1) | done — Epsilon, Python, C++, Markdown, JSON/YAML/TOML, LaTeX, JS, shell |
+| File explorer (Phase 1) | done — folder tree, rename, duplicate, delete, drag-to-move, type icons, filter |
 | Pane system (Phase 1) | done — split/tab/move/maximize, saved layouts, 4 profiles |
 | CAS pane, LaTeX preview, Python, C++, data, algorithm | pending |
 

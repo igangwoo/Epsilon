@@ -181,6 +181,12 @@ html, body {
 .btn:hover { transform: translateY(-1px); filter: brightness(1.08); }
 .btn:active { transform: translateY(0); }
 .btn.running { opacity: 0.7; pointer-events: none; }
+/* checking is an Epsilon operation; the button says so when it cannot run */
+.btn:disabled {
+  background: var(--glass-hi); color: var(--fg-faint); box-shadow: none;
+  cursor: default; border: 1px solid var(--glass-border);
+}
+.btn:disabled:hover { transform: none; filter: none; }
 
 .icon-btn, .mini-btn {
   background: var(--glass-hi); border: 1px solid var(--glass-border);
@@ -228,6 +234,62 @@ html, body {
 .file-item .dirty { width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent); margin-left: auto; opacity: 0; }
 .file-item.dirty .dirty { opacity: 1; }
+
+/* --- explorer tree --- */
+.side-head-actions { display: flex; gap: 2px; }
+#fileFilter { margin: 0 8px 6px; }
+.file-item { padding: 5px 10px; gap: 6px; user-select: none; }
+.file-item.folder { font-weight: 550; color: var(--fg-dim); }
+.file-item .twisty { width: 10px; font-size: 9px; opacity: 0.75;
+  flex: none; text-align: center; }
+.file-item .file-glyph {
+  flex: none; min-width: 20px; height: 15px; padding: 0 3px; border-radius: 4px;
+  font-size: 8.5px; font-weight: 700; line-height: 15px; text-align: center;
+  letter-spacing: 0.2px; text-transform: uppercase;
+  background: var(--glass-hi); color: var(--fg-faint);
+}
+.file-item .file-glyph.folder-glyph { background: none; color: var(--fg-faint);
+  min-width: 12px; font-size: 11px; }
+.file-item .file-name { overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.file-item.drop-target { background: color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: 1px solid var(--accent); outline-offset: -1px; }
+.file-empty { padding: 10px; font-size: 12px; color: var(--fg-faint); }
+
+/* one accent per language, so the file type reads before the name does */
+.file-glyph.lang-epsilon { background: color-mix(in srgb, var(--accent) 26%, transparent);
+  color: var(--accent); }
+.file-glyph.lang-python { background: color-mix(in srgb, #4b8bbe 30%, transparent);
+  color: #7fb3d8; }
+.file-glyph.lang-cpp { background: color-mix(in srgb, #f34b7d 26%, transparent);
+  color: #f37f9e; }
+.file-glyph.lang-markdown { background: color-mix(in srgb, var(--fg-faint) 22%, transparent); }
+.file-glyph.lang-latex { background: color-mix(in srgb, #2ea44f 26%, transparent);
+  color: #6fcf8b; }
+.file-glyph.lang-json,
+.file-glyph.lang-yaml,
+.file-glyph.lang-toml { background: color-mix(in srgb, var(--heur) 22%, transparent);
+  color: var(--heur); }
+
+/* --- context menu --- */
+.ctx-menu {
+  position: fixed; z-index: 90; min-width: 168px; padding: 5px;
+  border-radius: 11px; background: var(--glass); border: 1px solid var(--glass-border);
+  backdrop-filter: blur(22px) saturate(150%);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column; gap: 1px;
+}
+.ctx-menu.hidden { display: none; }
+.ctx-item {
+  text-align: left; padding: 7px 10px; border-radius: 7px; border: none;
+  background: none; color: var(--fg-dim); font: inherit; font-size: 12.5px;
+  cursor: pointer; transition: var(--trans);
+}
+.ctx-item:hover { background: var(--glass-hi); color: var(--fg); }
+.ctx-item.danger { color: var(--err); }
+.ctx-item.danger:hover { background: color-mix(in srgb, var(--err) 18%, transparent); }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--glass-border); }
 
 .thm-item {
   padding: 8px 10px; border-radius: 9px; cursor: pointer; margin-bottom: 3px;
