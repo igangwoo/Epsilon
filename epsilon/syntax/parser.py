@@ -50,6 +50,7 @@ DEFAULT_INFIX: dict[str, OpInfo] = {
     "-":   OpInfo(65, "left"),
     "*":   OpInfo(70, "left"),
     "/":   OpInfo(70, "left"),
+    "//":  OpInfo(70, "left"),
     "%":   OpInfo(70, "left"),
     "><":  OpInfo(72, "right"),
     "∘":   OpInfo(76, "right"),
@@ -573,9 +574,22 @@ class Parser:
             cmds.append(self.parse_command())
         return S.CModule(commands=cmds)
 
+    def parse_attribute(self) -> S.SAttr:
+        """`key` (a flag) or `key "value"` (a keyed attribute)."""
+        tok = self.peek()
+        if tok.kind not in ("IDENT", "KW"):
+            raise self.err(f"expected an attribute name, found "
+                           f"'{tok.text or tok.kind}'")
+        self.next()
+        if self.at("STR"):
+            val = self.next()
+            return S.SAttr(key=tok.text, value=val.value,  # type: ignore[arg-type]
+                           span=_join(_tok_span(tok), _tok_span(val)))
+        return S.SAttr(key=tok.text, span=_tok_span(tok))
+
     def parse_command(self) -> S.Command:
         doc: Optional[str] = None
-        attrs: list[str] = []
+        attrs: list[S.SAttr] = []
         while True:
             if self.at("DOC"):
                 doc = self.next().value  # type: ignore[assignment]
@@ -583,9 +597,11 @@ class Parser:
             if self.at_sym("@["):
                 self.next()
                 while not self.at_sym("]"):
-                    attrs.append(self.next().text)
+                    attrs.append(self.parse_attribute())
                     if self.at_sym(","):
                         self.next()
+                        continue
+                    break
                 self.expect("SYM", "]")
                 continue
             break
@@ -761,7 +777,7 @@ class Parser:
                 return S.CCheck(expr=self.parse_expr(0), span=_tok_span(t))
             if sub in ("eval", "simplify", "normalize"):
                 c = S.CEval(expr=self.parse_expr(0), span=_tok_span(t))
-                c.attrs = [sub]
+                c.attrs = [S.SAttr(key=sub, span=_tok_span(t))]
                 return c
             raise self.err(f"unknown directive '#{sub}'")
 

@@ -61,6 +61,10 @@ class Declaration:
     statement_kind: Optional[str] = None  # theorem|lemma|proposition|corollary
     attrs: list[str] = field(default_factory=list)     # e.g. ["simp"]
     inductive: Optional[str] = None    # owning inductive for ctors/recursors
+    #: user-facing mathematical name, e.g. "Addition.Commutativity" for the
+    #: internal identifier `Nat.add_comm`. Purely presentational: the kernel
+    #: identifies declarations by `name` and never reads this.
+    display_name: Optional[str] = None
 
     def hash(self) -> str:
         """Stable content hash of statement (+ proof) for reproducibility."""
@@ -96,6 +100,11 @@ class Environment:
         self._axiom_cache: dict[str, frozenset[str]] = {}
         # axiom name -> worst status it forces on dependent theorems
         self.trust_status: dict[str, str] = dict(BUILTIN_TRUST_STATUS)
+        # user-facing mathematical name -> internal identifier. A second,
+        # purely presentational naming layer: `Addition.Commutativity` and
+        # `Nat.add_comm` denote the same declaration, and the kernel only
+        # ever knows the latter.
+        self.by_display_name: dict[str, str] = {}
 
     def register_trust_axiom(self, name: str, status: str = "symbolic") -> None:
         """Mark an axiom as an *oracle* axiom, so theorems that depend on it
@@ -119,6 +128,41 @@ class Environment:
     @property
     def trust_axioms(self) -> frozenset[str]:
         return frozenset(self.trust_status)
+
+    # ------------------------------------------------------------------
+    # User-facing mathematical names (presentation only)
+    # ------------------------------------------------------------------
+    def register_display_name(self, internal: str, display: str) -> None:
+        """Give a declaration a user-facing mathematical name.
+
+        The name becomes usable wherever the internal identifier is, so a
+        proof may cite `Addition.Commutativity` instead of `Nat.add_comm`.
+        Collisions are refused rather than silently shadowing something:
+        a display name that is already a real declaration, or that already
+        points at a different declaration, would make one written name mean
+        two things depending on what happened to be loaded.
+        """
+        existing = self.by_display_name.get(display)
+        if existing is not None and existing != internal:
+            raise KernelError(
+                f"mathematical name '{display}' is already the name of "
+                f"'{existing}'; it cannot also name '{internal}'")
+        if display in self.decls:
+            raise KernelError(
+                f"mathematical name '{display}' collides with the internal "
+                f"identifier of an existing declaration")
+        self.by_display_name[display] = internal
+        decl = self.decls.get(internal)
+        if decl is not None:
+            decl.display_name = display
+
+    def resolve_display_name(self, display: str) -> Optional[str]:
+        """Internal identifier for a user-facing name, if one is registered."""
+        return self.by_display_name.get(display)
+
+    def display_name_of(self, internal: str) -> Optional[str]:
+        decl = self.decls.get(internal)
+        return decl.display_name if decl is not None else None
 
     # ------------------------------------------------------------------
     def contains(self, name: str) -> bool:

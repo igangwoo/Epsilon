@@ -143,7 +143,10 @@ class ElabContext:
                 return cand
         if self.env.contains(name):
             return name
-        return None
+        # user-facing mathematical names resolve last, so a real declaration
+        # always wins and adding a display name can never capture an existing
+        # identifier
+        return self.env.resolve_display_name(name)
 
     def qualify(self, name: str) -> str:
         """Full name for a new declaration in the current namespace."""

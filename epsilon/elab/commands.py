@@ -84,6 +84,18 @@ class CommandProcessor:
         raise ElabError(f"unsupported command {type(cmd).__name__}", cmd.span)
 
     # ------------------------------------------------------------------
+    def _apply_display_name(self, name: str, cmd: S.Command) -> Optional[str]:
+        """Register the `@[name "..."]` mathematical name, if the command
+        carries one. Returns the registered name, or None."""
+        display = cmd.attr("name")
+        if display is None:
+            return None
+        try:
+            self.env.register_display_name(name, display)
+        except KernelError as e:
+            raise ElabError(str(e), cmd.span)
+        return display
+
     def _with_binders(self, binders: list[S.SBinder]):
         base = len(self.ctx.locals)
         lf = self.elab.elab_command_binders(binders)
@@ -109,8 +121,9 @@ class CommandProcessor:
             self.ctx.pop_locals_to(base)
         decl = Declaration(name, DeclKind.DEFINITION, closed_ty, value=closed_val,
                            doc=cmd.doc, module=self.module, span=cmd.span,
-                           attrs=cmd.attrs)
+                           attrs=cmd.flags())
         add_decl(self.env, decl)
+        self._apply_display_name(name, cmd)
         return CmdResult("def", name=name, type=closed_ty, span=cmd.span,
                          message=f"{name} : {pp(self.env, closed_ty)}")
 
@@ -133,7 +146,8 @@ class CommandProcessor:
             self.ctx.pop_locals_to(base)
         add_decl(self.env, Declaration(name, DeclKind.AXIOM, closed, doc=cmd.doc,
                                        module=self.module, span=cmd.span,
-                                       attrs=cmd.attrs))
+                                       attrs=cmd.flags()))
+        self._apply_display_name(name, cmd)
         return CmdResult("axiom", name=name, type=closed, span=cmd.span,
                          message=f"axiom {name} : {pp(self.env, closed)}")
 
@@ -166,9 +180,10 @@ class CommandProcessor:
 
         decl = Declaration(name, DeclKind.THEOREM, closed_stmt, value=closed_proof,
                            doc=cmd.doc, module=self.module, span=cmd.span,
-                           statement_kind=cmd.kind, attrs=cmd.attrs,
+                           statement_kind=cmd.kind, attrs=cmd.flags(),
                            reducible=False)
         add_decl(self.env, decl)  # THE trust step: kernel checks the proof
+        self._apply_display_name(name, cmd)
         status = self.env.verification_status(name)
         return CmdResult("theorem", name=name, type=closed_stmt, span=cmd.span,
                          status=status, trace=trace,
@@ -199,6 +214,7 @@ class CommandProcessor:
         declare_inductive(self.env, spec)
         d = self.env.expect(name)
         d.doc, d.module, d.span = cmd.doc, self.module, cmd.span
+        self._apply_display_name(name, cmd)
         return CmdResult("inductive", name=name, type=ind_ty, span=cmd.span,
                          message=f"inductive {name} with "
                                  f"{len(ctor_specs)} constructors")
@@ -236,6 +252,7 @@ class CommandProcessor:
         self._make_projections(name, len(lf), field_tys)
         d = self.env.expect(name)
         d.doc, d.module, d.span = cmd.doc, self.module, cmd.span
+        self._apply_display_name(name, cmd)
         return CmdResult("structure", name=name, type=ind_ty, span=cmd.span,
                          message=f"structure {name} with {len(field_tys)} fields")
 
@@ -280,7 +297,8 @@ class CommandProcessor:
         nf = normalize(self.env, t)
         msg = pp(self.env, nf)
         return CmdResult("eval", message=msg, term=nf, type=ty, span=cmd.span,
-                         extra={"input": t, "mode": (cmd.attrs or ["eval"])[0]})
+                         extra={"input": t,
+                                "mode": cmd.attrs[0].key if cmd.attrs else "eval"})
 
     def _do_plot(self, cmd: S.CPlot) -> CmdResult:
         R = Const("Real")

@@ -23,7 +23,8 @@ for T in ("Nat", "Int", "Rat", "Real", "Complex"):
     INFIX[f"{T}.add"] = ("+", 65, "left")
     INFIX[f"{T}.sub"] = ("-", 65, "left")
     INFIX[f"{T}.mul"] = ("*", 70, "left")
-    INFIX[f"{T}.div"] = ("/", 70, "left")
+    # `/` is exact division; ℕ/ℤ division is floor division and prints `//`
+    INFIX[f"{T}.div"] = ("//" if T in ("Nat", "Int") else "/", 70, "left")
     INFIX[f"{T}.mod"] = ("%", 70, "left")
     INFIX[f"{T}.pow"] = ("^", 80, "right")
     INFIX[f"{T}.le"] = ("≤", 50, "none")

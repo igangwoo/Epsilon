@@ -186,7 +186,10 @@ INFIX_LATEX["Iff"] = ("\\leftrightarrow", 20, "right")
 INFIX_LATEX["Prod"] = ("\\times", 72, "right")
 INFIX_LATEX["String.append"] = ("\\mathbin{+\\!\\!+}", 65, "left")
 
-DIV_OPS = {f"{T}.div" for T in NUMERIC_TYPES}
+#: exact division renders as a fraction; ℕ/ℤ division is *floor* division
+#: and must not be drawn as one, or the export would overstate the result
+DIV_OPS = {f"{T}.div" for T in NUMERIC_TYPES if T not in ("Nat", "Int")}
+FLOOR_DIV_OPS = {"Nat.div", "Int.div"}
 POW_OPS = {f"{T}.pow" for T in NUMERIC_TYPES}
 _POW_BASE_PREC = 81  # forces parens around a base that is itself +,-,*,/,^
 
@@ -323,6 +326,11 @@ def _to_latex(env: Environment, t: Term, prec: int, names: list[str]) -> str:
                 num = _to_latex(env, args[0], 0, names)
                 den = _to_latex(env, args[1], 0, names)
                 return f"\\frac{{{num}}}{{{den}}}"
+            if n in FLOOR_DIV_OPS and len(args) == 2:
+                num = _to_latex(env, args[0], 0, names)
+                den = _to_latex(env, args[1], 0, names)
+                return (f"\\left\\lfloor \\frac{{{num}}}{{{den}}} "
+                        f"\\right\\rfloor")
             if n in POW_OPS and len(args) == 2:
                 base = _to_latex(env, args[0], _POW_BASE_PREC, names)
                 exp = _to_latex(env, args[1], 0, names)

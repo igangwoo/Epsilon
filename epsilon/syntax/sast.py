@@ -175,9 +175,37 @@ ProofLike = Union[TermProof, TacticProof]
 # ---------------------------------------------------------------------------
 
 @dataclass
+class SAttr(Node):
+    """One `@[...]` attribute.
+
+    An attribute is either a flag (`@[simp]`, value is None) or a keyed
+    value (`@[name "Addition.Commutativity"]`). Keeping the key and the
+    value as separate fields means the AST says which is which, instead of
+    leaving a caller to guess from a flat list of tokens.
+    """
+    key: str = ""
+    value: Optional[str] = None
+
+    @property
+    def is_flag(self) -> bool:
+        return self.value is None
+
+
+@dataclass
 class Command(Node):
     doc: Optional[str] = None
-    attrs: list[str] = field(default_factory=list)
+    attrs: list[SAttr] = field(default_factory=list)
+
+    def flags(self) -> list[str]:
+        """Keys of the value-less attributes, e.g. ["simp"]."""
+        return [a.key for a in self.attrs if a.is_flag]
+
+    def attr(self, key: str) -> Optional[str]:
+        """Value of a keyed attribute, or None if absent."""
+        for a in self.attrs:
+            if a.key == key and a.value is not None:
+                return a.value
+        return None
 
 
 @dataclass

@@ -143,7 +143,10 @@ INFIX_MML["Iff"] = ("↔", 20, "right")
 INFIX_MML["Prod"] = ("×", 72, "right")
 INFIX_MML["String.append"] = ("++", 65, "left")
 
-DIV_OPS = {f"{T}.div" for T in NUMERIC_TYPES}
+#: exact division renders as a fraction; ℕ/ℤ division is *floor* division
+#: and gets floor brackets, so the markup does not overstate the result
+DIV_OPS = {f"{T}.div" for T in NUMERIC_TYPES if T not in ("Nat", "Int")}
+FLOOR_DIV_OPS = {"Nat.div", "Int.div"}
 POW_OPS = {f"{T}.pow" for T in NUMERIC_TYPES}
 _POW_BASE_PREC = 81
 
@@ -288,6 +291,11 @@ def _to_mml(env: Environment, t: Term, prec: int,
                 num = _to_mml(env, args[0], 0, names)
                 den = _to_mml(env, args[1], 0, names)
                 return _el("mfrac", num, den)
+            if n in FLOOR_DIV_OPS and len(args) == 2:
+                num = _to_mml(env, args[0], 0, names)
+                den = _to_mml(env, args[1], 0, names)
+                return _mrow(_mo("⌊"), _el("mfrac", num, den),
+                             _mo("⌋"))
             if n in POW_OPS and len(args) == 2:
                 base = _to_mml(env, args[0], _POW_BASE_PREC, names)
                 exp = _to_mml(env, args[1], 0, names)

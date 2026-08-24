@@ -13,6 +13,7 @@ from typing import Optional
 from .kernel.env import DeclKind
 from .elab.context import LOCAL_MARK
 from .elab.pp import pp
+from .naming import humanize
 from .project import Session, STATUS_LABELS
 
 TACTIC_DOCS = {
@@ -74,6 +75,9 @@ class CompletionItem:
     type: str = ""
     doc: str = ""
     status: Optional[str] = None
+    #: user-facing mathematical name, and the label to show for it
+    display_name: Optional[str] = None
+    title: str = ""
 
 
 def completions(session: Session, prefix: str = "",
@@ -86,7 +90,13 @@ def completions(session: Session, prefix: str = "",
         d = session.env.decls[name]
         if LOCAL_MARK in name or name.startswith("$"):
             continue
-        if prefix and prefix_l not in name.lower():
+        display = d.display_name
+        # a search for "commutativity" must find `Nat.add_comm`, so the
+        # mathematical name and its humanized label are part of the haystack
+        searchable = name.lower()
+        if display:
+            searchable += "\n" + display.lower() + "\n" + humanize(display).lower()
+        if prefix and prefix_l not in searchable:
             continue
         short = name.rsplit(".", 1)[-1]
         if prefix and not (name.lower().startswith(prefix_l)
@@ -97,7 +107,8 @@ def completions(session: Session, prefix: str = "",
                   if d.kind == DeclKind.THEOREM else None)
         items.append(CompletionItem(
             name=name, kind=d.kind.value, type=pp(session.env, d.type),
-            doc=d.doc or "", status=status))
+            doc=d.doc or "", status=status, display_name=display,
+            title=humanize(display) if display else name))
 
     for tac, doc in TACTIC_DOCS.items():
         if not prefix or tac.lower().startswith(prefix_l):
@@ -133,6 +144,8 @@ def hover(session: Session, name: str) -> Optional[dict]:
                     if a not in session.env.trust_axioms)
     return {
         "name": resolved,
+        "display_name": d.display_name,
+        "title": humanize(d.display_name) if d.display_name else resolved,
         "kind": d.kind.value,
         "type": pp(session.env, d.type),
         "doc": d.doc or "",
@@ -179,13 +192,18 @@ def search(session: Session, query: str, limit: int = 50) -> list[dict]:
         if LOCAL_MARK in name or name.startswith("$"):
             continue
         stmt = pp(session.env, d.type)
-        haystack = f"{name}\n{stmt}\n{d.doc or ''}".lower()
+        display = d.display_name
+        haystack = (f"{name}\n{stmt}\n{d.doc or ''}\n"
+                    f"{display or ''}\n{humanize(display) if display else ''}"
+                    ).lower()
         if q not in haystack:
             continue
         status = (session.env.verification_status(name)
                   if d.kind == DeclKind.THEOREM else None)
         results.append({
             "name": name, "kind": d.kind.value, "statement": stmt,
+            "display_name": display,
+            "title": humanize(display) if display else name,
             "module": d.module, "doc": d.doc, "span": d.span,
             "status": status,
             "status_label": STATUS_LABELS[status] if status else None,

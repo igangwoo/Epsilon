@@ -26,7 +26,13 @@ from ..syntax import sast as S
 from .context import ElabContext, ElabError, LocalDecl, NUMERIC_ORDER
 
 LOGIC_OPS = {"/\\": "And", "\\/": "Or", "<->": "Iff"}
-ARITH_OPS = {"+": "add", "-": "sub", "*": "mul", "/": "div", "%": "mod", "^": "pow"}
+ARITH_OPS = {"+": "add", "-": "sub", "*": "mul", "/": "div", "//": "div",
+             "%": "mod", "^": "pow"}
+# Division is split into two operators with fixed, disjoint meanings:
+#   /   exact (field) division  - ℚ, ℝ, ℂ; ℕ/ℤ operands promote to ℚ
+#   //  floor division          - ℕ and ℤ only
+# so an expression's type never depends on the *values* of its operands.
+INTEGER_ONLY_OPS = {"//", "%"}
 CMP_OPS = {"<": ("lt", False), "<=": ("le", False), ">": ("lt", True), ">=": ("le", True)}
 
 
@@ -175,9 +181,16 @@ class Elaborator:
 
         if op == "=":
             l, r, T = self._elab_homogeneous(e)
-            sort = self.ctx._safe_whnf(self.ctx.infer(T))
-            if isinstance(sort, Sort) and sort.level == 0:
-                raise ElabError("use ↔ (iff) to relate propositions, not =", e.span)
+            # `=` relates elements of a type; `↔` relates propositions. The
+            # operand type itself is the sort to test here - testing the type
+            # *of* that type is one universe too high and never matches.
+            Tw = self.ctx._safe_whnf(self.ctx.resolve_mvars(T))
+            if isinstance(Tw, Sort) and Tw.level == 0:
+                raise ElabError(
+                    "`=` relates elements of a type, but both sides are "
+                    "propositions; use `↔` for logical equivalence (or write "
+                    "`Eq Prop p q` explicitly for propositional equality)",
+                    e.span)
             return mk_app(Const("Eq"), T, l, r)
         if op == "!=":
             l, r, T = self._elab_homogeneous(e)
@@ -289,20 +302,25 @@ class Elaborator:
         join_i = max(NUMERIC_ORDER.index(ln), NUMERIC_ORDER.index(rn))
         if exp_num is not None:
             join_i = max(join_i, NUMERIC_ORDER.index(exp_num))
-        # subtraction/division promote away from Nat when the user expects them
         join = NUMERIC_ORDER[join_i]
-        if op == "/" and join in ("Nat", "Int") and not (
-                isinstance(self.ctx.resolve_mvars(l), Lit)
-                and isinstance(self.ctx.resolve_mvars(r), Lit)
-                and (self.ctx.resolve_mvars(l).value % self.ctx.resolve_mvars(r).value == 0
-                     if self.ctx.resolve_mvars(r).value != 0 else False)):
-            # keep integer division only when it is exact on literals;
-            # otherwise this is mathematics: 1/2 lives in ℚ
-            if exp_num is None:
-                join = "Rat"
-                join_i = NUMERIC_ORDER.index("Rat")
-        if op == "%" and join not in ("Nat", "Int"):
-            raise ElabError("% is only defined on Nat and Int", e.span)
+
+        # `/` is exact division everywhere: ℕ and ℤ are not closed under it,
+        # so those operands promote to ℚ. The result type is fixed by the
+        # operator and the operand *types* alone - never by their values.
+        if op == "/" and join in ("Nat", "Int"):
+            if exp_num in ("Nat", "Int"):
+                raise ElabError(
+                    f"`/` is exact division and yields ℚ here, but a value of "
+                    f"type {exp_num} is expected; use `//` for floor division "
+                    f"on ℕ and ℤ", e.span)
+            join = "Rat"
+            join_i = NUMERIC_ORDER.index("Rat")
+
+        if op in INTEGER_ONLY_OPS and join not in ("Nat", "Int"):
+            pretty = {"//": "floor division `//`", "%": "`%`"}[op]
+            raise ElabError(
+                f"{pretty} is defined on ℕ and ℤ only; use `/` for exact "
+                f"division on {join}", e.span)
         J = Const(join)
         lj = self.ctx.coerce(l, lt, J) or l
         rj = self.ctx.coerce(r, rt, J) or r

@@ -458,9 +458,14 @@
       if (state.selectedTheorem === t.name) item.classList.add("active");
       const row = el("div", "thm-row");
       row.appendChild(el("span", "status-dot " + t.status));
-      row.appendChild(el("span", "thm-name", t.name));
+      // lead with the mathematical name when the library gives one, and
+      // keep the internal identifier visible underneath - it is what a
+      // proof cites and what error messages name
+      row.appendChild(el("span", "thm-name", t.title || t.name));
       item.appendChild(row);
+      if (t.display_name) item.appendChild(el("div", "thm-ident", t.name));
       item.appendChild(el("div", "thm-stmt", t.statement));
+      if (t.doc) item.appendChild(el("div", "thm-doc", t.doc));
       if (t.axioms && t.axioms.length) {
         const ax = el("div", "thm-axioms");
         t.axioms.forEach((a) => ax.appendChild(el("span", "axiom-chip", a)));
@@ -931,8 +936,19 @@
       list.innerHTML = "";
       (r.items || []).slice(0, 40).forEach((it) => {
         const item = el("li", "search-item");
-        item.innerHTML = `<span class="sn">${esc(it.name)}</span><br>
-          <span class="ss">${esc(it.type || it.kind)}</span>`;
+        // the citable name: the mathematical one when the library defines
+        // it, otherwise the internal identifier. Both resolve in a proof.
+        const cite = it.display_name || it.name;
+        item.innerHTML =
+          `<span class="sn">${esc(it.title || it.name)}</span><br>` +
+          (it.display_name ? `<span class="si">${esc(it.name)}</span><br>` : "") +
+          `<span class="ss">${esc(it.type || it.kind)}</span>`;
+        item.title = "Click to insert " + cite;
+        item.onclick = () => {
+          editor.focus();
+          insertAtCursor(cite);
+          toast("Inserted " + cite, "ok");
+        };
         list.appendChild(item);
       });
     }, 200);

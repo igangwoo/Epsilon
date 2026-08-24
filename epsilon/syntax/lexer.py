@@ -54,15 +54,28 @@ class Token:
 KEYWORDS = {
     "def", "define", "axiom", "constant", "theorem", "lemma", "proposition",
     "corollary", "example", "inductive", "structure", "import", "namespace",
-    "end", "open", "by", "fun", "forall", "exists", "not", "in", "with",
+    "end", "open", "by", "fun", "forall", "exists", "not", "with",
     "notation", "infixl", "infixr", "prefix", "postfix",
     "plot", "calc", "at", "where", "then", "else", "if", "match", "sorry",
+}
+
+# Word-shaped ASCII spellings of operators. These are lexed as SYM tokens
+# carrying the canonical symbol, so a word operator has exactly the same
+# syntactic role as the symbol it spells - `a in b` parses as membership,
+# never as the application `a(in, b)`. They are reserved words: an operator
+# whose meaning depended on whether the surrounding code happened to make
+# it look like a function call would not be predictable.
+WORD_OPERATORS = {
+    "in": "∈",
+    "notin": "∉",
+    "subseteq": "⊆",
+    "circ": "∘",
 }
 
 # multi-char ASCII symbols, longest first
 MULTI = [
     ":=", "->", "<->", "<-", "=>", "==", "!=", "<=", ">=", "/\\", "\\/",
-    "><", "@[", "..", "∘",
+    "//", "><", "@[", "..", "∘",
 ]
 MULTI.sort(key=len, reverse=True)
 
@@ -195,7 +208,11 @@ def tokenize(src: str) -> list[Token]:
             while i < n and _is_ident_cont(src[i]):
                 advance()
             text = src[start:i]
-            if text in KEYWORDS:
+            if text in WORD_OPERATORS:
+                # emit the canonical symbol, so the parser sees one token
+                # kind per operator regardless of how it was spelled
+                toks.append(Token("SYM", WORD_OPERATORS[text], l0, c0))
+            elif text in KEYWORDS:
                 toks.append(Token("KW", text, l0, c0))
             else:
                 toks.append(Token("IDENT", text, l0, c0))

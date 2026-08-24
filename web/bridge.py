@@ -137,4 +137,7 @@ def completions(prefix=""):
     from epsilon.intelligence import completions as get
     items = get(_completion_session, prefix, limit=100)
     return json.dumps({"items": [{"name": i["name"], "kind": i["kind"],
-                                  "type": i.get("type", "")} for i in items]})
+                                  "type": i.get("type", ""),
+                                  "display_name": i.get("display_name"),
+                                  "title": i.get("title") or i["name"]}
+                                 for i in items]})

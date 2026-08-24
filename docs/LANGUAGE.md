@@ -21,13 +21,18 @@ Every mathematical symbol has an ASCII fallback that lexes identically:
 | `¬` | `not` | negation |
 | `≠` | `!=` | inequality |
 | `≤` `≥` | `<=` `>=` | order |
-| `∈` `∉` | `in` | membership |
+| `∈` `∉` | `in` `notin` | membership |
 | `⊆` | `subseteq` | subset |
 | `×` | `><` | product type |
 | `·` | `*` | multiplication |
 | `∘` | `circ` | composition |
 | `←` | `<-` | reverse-rewrite marker |
 | `√` | | square root |
+
+Each ASCII spelling is exactly the operator it names — `a in b` is
+membership, never the application `a(in, b)`. The word-shaped ones
+(`in`, `notin`, `subseteq`, `circ`) are therefore reserved and cannot be
+used as identifiers.
 
 Greek letters (`α`, `β`, `π`, …), blackboard types (`ℕ ℤ ℚ ℝ ℂ`), and
 subscripts are valid in identifiers. Any Unicode symbol character can be
@@ -81,7 +86,7 @@ From loosest to tightest binding:
 | 40 | `¬` (prefix) | |
 | 50 | `= ≠ < ≤ > ≥ ∈ ⊆ ==` | none |
 | 65 | `+ -` | left |
-| 70 | `* / %` | left |
+| 70 | `* / // %` | left |
 | 72 | `×` | right |
 | 75 | unary `-` | |
 | 76 | `∘` | right |
@@ -144,6 +149,80 @@ theorem chain (a b c : Nat) (h1 : a = b) (h2 : b = c) : a = c := by
   calc a = b := by exact h1
        _ = c := by exact h2
 ```
+
+## Two rules that keep notation predictable
+
+**One symbol, one syntactic role.** A token's role is fixed when it is
+lexed, not inferred from its surroundings. In particular the two division
+operators are distinct, and neither changes meaning with its operands:
+
+| | meaning | operand types | result |
+|---|---|---|---|
+| `/` | exact (field) division | any numeric | `ℚ` for `ℕ`/`ℤ` operands, otherwise the operand type |
+| `//` | floor division | `ℕ`, `ℤ` only | same as the operands |
+
+```
+#eval 7 / 2      -- 7/2 : ℚ   exact
+#eval 6 / 3      -- 2 : ℚ     still ℚ: the operator decides, not the values
+#eval 7 // 2     -- 3 : ℕ     floor
+def d : Nat := 6 / 3   -- error: use `//` for floor division on ℕ and ℤ
+```
+
+An expression's type never depends on the *values* of its literals, so
+changing a `6` to a `7` can never change what an expression means.
+
+**`=` relates elements, `↔` relates propositions.**
+
+```
+theorem t (a : Nat) : a = a := by rfl        -- fine
+theorem u (p q : Prop) : p ↔ q := by sorry   -- fine
+theorem v (p q : Prop) : p = q := by sorry   -- error, points you at ↔
+```
+
+Propositional equality is still expressible when you genuinely want it,
+by naming it: `Eq Prop p q`.
+
+## Mathematical names
+
+Library results carry two names. The **internal identifier**
+(`Nat.add_comm`) is what the kernel stores, what error messages print,
+and what proofs have always been able to cite. The **mathematical name**
+(`NaturalNumbers.Addition.Commutativity`) is what someone who knows
+mathematics but not this prover would search for. Both resolve, so either
+may be written:
+
+```
+theorem t (x y : Nat) : x + y = y + x := by
+  exact NaturalNumbers.Addition.Commutativity(x, y)   -- or Nat.add_comm(x, y)
+```
+
+Declare one with the `name` attribute:
+
+```
+/-- Commutativity of addition on ℕ, proved by induction. -/
+@[name "NaturalNumbers.Addition.Commutativity"]
+theorem add_comm (a b : ℕ) : a + b = b + a := by ...
+```
+
+Attributes are either flags (`@[simp]`) or keyed values
+(`@[name "..."]`), and may be combined: `@[simp, name "..."]`.
+
+Interfaces show the humanized label — dots separate subject from
+property, run-together words are split — alongside the statement, so the
+theorem panel reads:
+
+```
+Natural Numbers · Addition Associativity
+Nat.add_assoc
+∀ (a : ℕ), ∀ (b : ℕ), ∀ (c : ℕ), a + b + c = a + (b + c)
+```
+
+Searching for "Commutativity", "Excluded Middle", or "Pythagorean" finds
+the corresponding results without knowing any identifier. Names are
+globally unique and cannot shadow a real declaration: a collision is a
+checked error, never a silent reinterpretation. Purely internal helpers
+(the decidability bridges, for instance) deliberately have no
+mathematical name — they are implementation, not library surface.
 
 ## Known limitations (v0.1)
 

@@ -4,36 +4,46 @@
 -- notation { x : T | p }.
 -- ═══════════════════════════════════════════════════════════════════
 
+@[name "Sets.MembershipInSetBuilder"]
 axiom mem_setOf {A : Type} (p : A → Prop) (a : A) :
   (a ∈ setOf(A, p)) ↔ p(a)
 
+@[name "Sets.MembershipIntroduction"]
 axiom mem_setOf_intro {A : Type} (p : A → Prop) (a : A) :
   p(a) → (a ∈ setOf(A, p))
 
+@[name "Sets.MembershipElimination"]
 axiom mem_setOf_elim {A : Type} (p : A → Prop) (a : A) :
   (a ∈ setOf(A, p)) → p(a)
 
 /-- Set extensionality. -/
+@[name "Sets.Extensionality"]
 axiom Set.ext {A : Type} (s t : Set(A)) :
   (∀ (x : A), (x ∈ s) ↔ (x ∈ t)) → s = t
 
+@[name "Sets.Union"]
 def Set.union {A : Type} (s t : Set(A)) : Set(A) :=
   setOf(A, λ (x : A) => (x ∈ s) ∨ (x ∈ t))
 
+@[name "Sets.Intersection"]
 def Set.inter {A : Type} (s t : Set(A)) : Set(A) :=
   setOf(A, λ (x : A) => (x ∈ s) ∧ (x ∈ t))
 
+@[name "Sets.EmptySet"]
 def Set.empty (A : Type) : Set(A) :=
   setOf(A, λ (x : A) => False)
 
+@[name "Sets.UniversalSet"]
 def Set.univ (A : Type) : Set(A) :=
   setOf(A, λ (x : A) => True)
 
+@[name "Sets.SubsetReflexivity"]
 theorem Set.subset_refl {A : Type} (s : Set(A)) : s ⊆ s := by
   intro x
   intro h
   exact h
 
+@[name "Sets.MembershipInLeftUnion"]
 theorem Set.mem_union_left {A : Type} (s t : Set(A)) (x : A)
     (h : x ∈ s) : x ∈ Set.union(s, t) := by
   unfold Set.union

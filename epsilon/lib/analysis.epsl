@@ -7,21 +7,31 @@
 namespace Real
 
 -- special values
-@[simp] axiom sin_zero : Real.sin(0) = 0
-@[simp] axiom cos_zero : Real.cos(0) = 1
-@[simp] axiom exp_zero : Real.exp(0) = 1
-@[simp] axiom log_one : Real.log(1) = 0
+@[simp, name "Trigonometry.SineAtZero"] axiom sin_zero : Real.sin(0) = 0
+@[simp, name "Trigonometry.CosineAtZero"] axiom cos_zero : Real.cos(0) = 1
+@[simp, name "Exponential.AtZero"] axiom exp_zero : Real.exp(0) = 1
+@[simp, name "Logarithm.AtOne"] axiom log_one : Real.log(1) = 0
+@[name "Trigonometry.SineAtPi"]
 axiom sin_pi : Real.sin(π) = 0
+@[name "Trigonometry.CosineAtPi"]
 axiom cos_pi : Real.cos(π) = -1
+@[name "Exponential.InverseOfLogarithm"]
 axiom exp_log (x : ℝ) : 0 < x → Real.exp(Real.log(x)) = x
+@[name "Logarithm.InverseOfExponential"]
 axiom log_exp (x : ℝ) : Real.log(Real.exp(x)) = x
 
 -- fundamental identities
+@[name "Trigonometry.PythagoreanIdentity"]
 axiom sin_sq_add_cos_sq (x : ℝ) : sin(x)^2 + cos(x)^2 = 1
+@[name "Trigonometry.SineOfSum"]
 axiom sin_add (x y : ℝ) : sin(x + y) = sin(x)*cos(y) + cos(x)*sin(y)
+@[name "Trigonometry.CosineOfSum"]
 axiom cos_add (x y : ℝ) : cos(x + y) = cos(x)*cos(y) - sin(x)*sin(y)
+@[name "Exponential.OfSum"]
 axiom exp_add (x y : ℝ) : exp(x + y) = exp(x) * exp(y)
+@[name "Trigonometry.SineIsOdd"]
 axiom sin_neg (x : ℝ) : sin(-x) = -sin(x)
+@[name "Trigonometry.CosineIsEven"]
 axiom cos_neg (x : ℝ) : cos(-x) = cos(x)
 
 end Real
@@ -30,67 +40,91 @@ end Real
 
 /-- ε-δ characterization: this axiom ties the primitive `HasLimitAt` to
     its classical definition. -/
+@[name "Limits.EpsilonDeltaDefinition"]
 axiom hasLimitAt_def (f : ℝ → ℝ) (a L : ℝ) :
   HasLimitAt(f, a, L) ↔
     (∀ (ε : ℝ), 0 < ε → ∃ (δ : ℝ), 0 < δ ∧
       (∀ (x : ℝ), x ≠ a → abs(x - a) < δ → abs(f(x) - L) < ε))
 
+@[name "Limits.ValueOfLimit"]
 axiom limit_spec (f : ℝ → ℝ) (a L : ℝ) :
   HasLimitAt(f, a, L) → limit(f, a) = L
 
+@[name "Limits.OfConstant"]
 axiom hasLimitAt_const (c a : ℝ) : HasLimitAt(λ (x : ℝ) => c, a, c)
+@[name "Limits.OfIdentity"]
 axiom hasLimitAt_id (a : ℝ) : HasLimitAt(λ (x : ℝ) => x, a, a)
 
+@[name "Limits.SumRule"]
 axiom hasLimitAt_add (f g : ℝ → ℝ) (a L M : ℝ) :
   HasLimitAt(f, a, L) → HasLimitAt(g, a, M) →
   HasLimitAt(λ (x : ℝ) => f(x) + g(x), a, L + M)
 
+@[name "Limits.ProductRule"]
 axiom hasLimitAt_mul (f g : ℝ → ℝ) (a L M : ℝ) :
   HasLimitAt(f, a, L) → HasLimitAt(g, a, M) →
   HasLimitAt(λ (x : ℝ) => f(x) * g(x), a, L * M)
 
 -- ── continuity ──────────────────────────────────────────────────────
 
+@[name "Continuity.AtAPointDefinition"]
 axiom continuousAt_def (f : ℝ → ℝ) (a : ℝ) :
   ContinuousAt(f, a) ↔ HasLimitAt(f, a, f(a))
 
+@[name "Continuity.Definition"]
 axiom continuous_def (f : ℝ → ℝ) :
   Continuous(f) ↔ (∀ (a : ℝ), ContinuousAt(f, a))
 
+@[name "Continuity.OfConstant"]
 axiom continuous_const (c : ℝ) : Continuous(λ (x : ℝ) => c)
+@[name "Continuity.OfIdentity"]
 axiom continuous_id : Continuous(λ (x : ℝ) => x)
+@[name "Continuity.OfSine"]
 axiom continuous_sin : Continuous(Real.sin)
+@[name "Continuity.OfCosine"]
 axiom continuous_cos : Continuous(Real.cos)
+@[name "Continuity.OfExponential"]
 axiom continuous_exp : Continuous(Real.exp)
 
+@[name "Continuity.SumRule"]
 axiom Continuous.add (f g : ℝ → ℝ) :
   Continuous(f) → Continuous(g) → Continuous(λ (x : ℝ) => f(x) + g(x))
+@[name "Continuity.ProductRule"]
 axiom Continuous.mul (f g : ℝ → ℝ) :
   Continuous(f) → Continuous(g) → Continuous(λ (x : ℝ) => f(x) * g(x))
+@[name "Continuity.CompositionRule"]
 axiom Continuous.comp (f g : ℝ → ℝ) :
   Continuous(f) → Continuous(g) → Continuous(λ (x : ℝ) => f(g(x)))
 
 /-- Intermediate value theorem (axiomatized). -/
+@[name "Continuity.IntermediateValueTheorem"]
 axiom intermediate_value (f : ℝ → ℝ) (a b y : ℝ) :
   Continuous(f) → a ≤ b → f(a) ≤ y → y ≤ f(b) →
   ∃ (c : ℝ), a ≤ c ∧ c ≤ b ∧ f(c) = y
 
 -- ── derivatives ─────────────────────────────────────────────────────
 
+@[name "Derivative.Definition"]
 axiom hasDerivAt_def (f : ℝ → ℝ) (a L : ℝ) :
   HasDerivAt(f, a, L) ↔
     HasLimitAt(λ (h : ℝ) => (f(a + h) - f(a)) / h, 0, L)
 
+@[name "Derivative.ValueOfDerivative"]
 axiom deriv_spec (f : ℝ → ℝ) (a L : ℝ) :
   HasDerivAt(f, a, L) → deriv(f)(a) = L
 
+@[name "Derivative.OfSine"]
 axiom deriv_sin : deriv(Real.sin) = Real.cos
+@[name "Derivative.OfExponential"]
 axiom deriv_exp : deriv(Real.exp) = Real.exp
+@[name "Derivative.OfConstant"]
 axiom deriv_const (c : ℝ) : deriv(λ (x : ℝ) => c) = (λ (x : ℝ) => (0 : ℝ))
+@[name "Derivative.OfIdentity"]
 axiom deriv_id : deriv(λ (x : ℝ) => x) = (λ (x : ℝ) => (1 : ℝ))
 
 /-- Fundamental theorem of calculus, part 2 (axiomatized):
     if F' = f then ∫[a,b] f = F(b) - F(a). -/
+@[name "Integration.FundamentalTheoremOfCalculus"]
 axiom ftc (F : ℝ → ℝ) (f : ℝ → ℝ) (a b : ℝ) :
   Continuous(f) → deriv(F) = f →
   integral(f, a, b) = F(b) - F(a)

@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 from . import LANGUAGE_VERSION, __version__
 from .kernel.bootstrap import bootstrap
+from .naming import apply_core_names, humanize
 from .kernel.env import Environment, DeclKind, KernelError
 from .kernel.term import Term, App, Const
 from .syntax import sast as S
@@ -79,6 +80,9 @@ class Session:
     def __init__(self, project_root: Optional[str] = None,
                  load_prelude: bool = True) -> None:
         self.env: Environment = bootstrap()
+        # mathematical names for kernel-declared objects; library results
+        # carry theirs in source via `@[name "..."]`
+        apply_core_names(self.env)
         self.ctx = ElabContext(self.env)
         self.project_root = project_root or os.getcwd()
         self.loaded_modules: set[str] = set()
@@ -239,6 +243,11 @@ class Session:
             from .elab.pp import pp
             out.append({
                 "name": name,
+                # user-facing mathematical name, and the label an interface
+                # should show; both fall back to the internal identifier so
+                # a consumer can always just read `title`
+                "display_name": d.display_name,
+                "title": humanize(d.display_name) if d.display_name else name,
                 "kind": d.statement_kind or "theorem",
                 "statement": pp(self.env, d.type),
                 "status": status,
@@ -265,6 +274,8 @@ class Session:
                 continue
             out.append({
                 "name": name, "kind": d.kind.value,
+                "display_name": d.display_name,
+                "title": humanize(d.display_name) if d.display_name else name,
                 "type": pp(self.env, d.type),
                 "module": d.module, "doc": d.doc, "span": d.span,
             })

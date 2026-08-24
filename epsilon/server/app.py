@@ -274,7 +274,10 @@ def create_app() -> FastAPI:
         session = _completion_session()
         items = get_completions(session, prefix, limit=100)
         return {"items": [{"name": i["name"], "kind": i["kind"],
-                           "type": i.get("type", "")} for i in items]}
+                           "type": i.get("type", ""),
+                           "display_name": i.get("display_name"),
+                           "title": i.get("title") or i["name"]}
+                          for i in items]}
 
     # -------------------- meta --------------------
     @app.get("/api/meta")
