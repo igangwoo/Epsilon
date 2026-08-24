@@ -153,3 +153,18 @@ def test_panels_fed_by_a_check_tolerate_having_none_yet():
             if arg.startswith(("r.", "state.lastCheck.")):
                 assert "||" in arg, (
                     f"{call}{arg}) can be called with nothing to show")
+
+
+def test_the_pane_api_matches_what_the_contracts_document():
+    """A documented entry point that is not exported is a promise unkept."""
+    contracts = (pathlib.Path(__file__).resolve().parent.parent
+                 / "docs" / "CONTRACTS.md").read_text()
+    documented = set(re.findall(r"EpsilonPanes\.(\w+)\(", contracts))
+    panes = PANES.read_text()
+    block = re.search(r"const api = \{(.*?)\n  \};", panes, re.S)
+    if not block:
+        block = re.search(r"\n  \{?\n?\s*init, registerView(.*?)\n  \};", panes, re.S)
+    assert block, "the pane module's exported surface was not found"
+    exported = set(re.findall(r"(\w+)[,:]", block.group(1)))
+    missing = sorted(documented - exported)
+    assert not missing, f"documented but not exported: {missing}"

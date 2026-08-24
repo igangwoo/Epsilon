@@ -562,7 +562,7 @@
 
   const api = {
     init, registerView, setBadge, openView, closeView, splitPane, toggleMaximize,
-    applyProfile, profileNames, viewIds, render,
+    moveView, applyProfile, profileNames, viewIds, render,
     isOpen: (id) => !!leafOfView(id),
     focusView: (id) => openView(id),
     reset: () => applyProfile("mathematics"),
