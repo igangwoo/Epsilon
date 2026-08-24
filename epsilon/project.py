@@ -189,9 +189,18 @@ class Session:
     # ------------------------------------------------------------------
     # Imports
     # ------------------------------------------------------------------
+    #: standard-library module names always resolve to LIB_DIR, so a user
+    #: file that happens to be called analysis.epsl cannot shadow the
+    #: library module the prelude imports.
+    STDLIB_MODULES = frozenset({"prelude", "algebra", "analysis", "sets"})
+
     def resolve_module_path(self, name: str) -> Optional[str]:
         rel = name.replace(".", os.sep) + ".epsl"
-        for root in (self.project_root, LIB_DIR):
+        # library modules first for stdlib names, project first otherwise
+        roots = ((LIB_DIR, self.project_root)
+                 if name in self.STDLIB_MODULES
+                 else (self.project_root, LIB_DIR))
+        for root in roots:
             path = os.path.join(root, rel)
             if os.path.isfile(path):
                 return path
