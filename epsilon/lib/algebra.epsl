@@ -1,0 +1,71 @@
+-- ═══════════════════════════════════════════════════════════════════
+-- Epsilon standard library · algebra
+-- Axiomatic algebraic structure of ℤ, ℚ, ℝ (commutative ordered fields).
+-- ℝ is axiomatized (its construction is future work); every theorem
+-- depending on these axioms lists them in its axiom report.
+-- ═══════════════════════════════════════════════════════════════════
+
+namespace Real
+
+axiom add_comm (a b : ℝ) : a + b = b + a
+axiom add_assoc (a b c : ℝ) : (a + b) + c = a + (b + c)
+@[simp] axiom add_zero (a : ℝ) : a + 0 = a
+@[simp] axiom zero_add (a : ℝ) : 0 + a = a
+@[simp] axiom add_neg (a : ℝ) : a + (-a) = 0
+axiom mul_comm (a b : ℝ) : a * b = b * a
+axiom mul_assoc (a b c : ℝ) : (a * b) * c = a * (b * c)
+@[simp] axiom mul_one (a : ℝ) : a * 1 = a
+@[simp] axiom one_mul (a : ℝ) : 1 * a = a
+@[simp] axiom mul_zero (a : ℝ) : a * 0 = 0
+@[simp] axiom zero_mul (a : ℝ) : 0 * a = 0
+axiom left_distrib (a b c : ℝ) : a * (b + c) = a * b + a * c
+axiom right_distrib (a b c : ℝ) : (a + b) * c = a * c + b * c
+axiom sub_def (a b : ℝ) : a - b = a + (-b)
+axiom div_def (a b : ℝ) : a / b = a * Real.inv(b)
+axiom mul_inv_cancel (a : ℝ) : a ≠ 0 → a * Real.inv(a) = 1
+axiom neg_neg (a : ℝ) : -(-a) = a
+
+axiom le_refl (a : ℝ) : a ≤ a
+axiom le_trans (a b c : ℝ) : a ≤ b → b ≤ c → a ≤ c
+axiom le_antisymm (a b : ℝ) : a ≤ b → b ≤ a → a = b
+axiom lt_irrefl (a : ℝ) : ¬(a < a)
+axiom le_total (a b : ℝ) : a ≤ b ∨ b ≤ a
+axiom add_le_add_right (a b c : ℝ) : a ≤ b → a + c ≤ b + c
+axiom mul_le_mul_of_nonneg (a b c : ℝ) : a ≤ b → 0 ≤ c → a * c ≤ b * c
+axiom lt_of_le_of_ne (a b : ℝ) : a ≤ b → a ≠ b → a < b
+axiom le_of_lt (a b : ℝ) : a < b → a ≤ b
+
+axiom sq_nonneg (a : ℝ) : 0 ≤ a * a
+axiom abs_nonneg (a : ℝ) : 0 ≤ Real.abs(a)
+axiom sqrt_nonneg (a : ℝ) : 0 ≤ Real.sqrt(a)
+axiom sqrt_sq (a : ℝ) : 0 ≤ a → Real.sqrt(a * a) = a
+
+-- example derived result (Formally Proven relative to the field axioms)
+
+theorem add_comm_three (a b c : ℝ) : a + b + c = c + b + a := by
+  rw [add_comm, add_comm a b]
+  rw [← add_assoc]
+
+end Real
+
+namespace Int
+axiom add_comm (a b : ℤ) : a + b = b + a
+axiom add_assoc (a b c : ℤ) : (a + b) + c = a + (b + c)
+@[simp] axiom add_zero (a : ℤ) : a + 0 = a
+@[simp] axiom zero_add (a : ℤ) : 0 + a = a
+@[simp] axiom add_neg (a : ℤ) : a + (-a) = 0
+axiom mul_comm (a b : ℤ) : a * b = b * a
+axiom mul_assoc (a b c : ℤ) : (a * b) * c = a * (b * c)
+@[simp] axiom mul_one (a : ℤ) : a * 1 = a
+axiom left_distrib (a b c : ℤ) : a * (b + c) = a * b + a * c
+end Int
+
+namespace Rat
+axiom add_comm (a b : ℚ) : a + b = b + a
+axiom add_assoc (a b c : ℚ) : (a + b) + c = a + (b + c)
+@[simp] axiom add_zero (a : ℚ) : a + 0 = a
+axiom mul_comm (a b : ℚ) : a * b = b * a
+axiom mul_assoc (a b c : ℚ) : (a * b) * c = a * (b * c)
+@[simp] axiom mul_one (a : ℚ) : a * 1 = a
+axiom left_distrib (a b c : ℚ) : a * (b + c) = a * b + a * c
+end Rat

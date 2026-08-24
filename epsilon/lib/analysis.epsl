@@ -1,0 +1,96 @@
+-- ═══════════════════════════════════════════════════════════════════
+-- Epsilon standard library · analysis
+-- Axiomatized real analysis: limits (ε-δ), continuity, derivatives,
+-- and the elementary transcendental functions.
+-- ═══════════════════════════════════════════════════════════════════
+
+namespace Real
+
+-- special values
+@[simp] axiom sin_zero : Real.sin(0) = 0
+@[simp] axiom cos_zero : Real.cos(0) = 1
+@[simp] axiom exp_zero : Real.exp(0) = 1
+@[simp] axiom log_one : Real.log(1) = 0
+axiom sin_pi : Real.sin(π) = 0
+axiom cos_pi : Real.cos(π) = -1
+axiom exp_log (x : ℝ) : 0 < x → Real.exp(Real.log(x)) = x
+axiom log_exp (x : ℝ) : Real.log(Real.exp(x)) = x
+
+-- fundamental identities
+axiom sin_sq_add_cos_sq (x : ℝ) : sin(x)^2 + cos(x)^2 = 1
+axiom sin_add (x y : ℝ) : sin(x + y) = sin(x)*cos(y) + cos(x)*sin(y)
+axiom cos_add (x y : ℝ) : cos(x + y) = cos(x)*cos(y) - sin(x)*sin(y)
+axiom exp_add (x y : ℝ) : exp(x + y) = exp(x) * exp(y)
+axiom sin_neg (x : ℝ) : sin(-x) = -sin(x)
+axiom cos_neg (x : ℝ) : cos(-x) = cos(x)
+
+end Real
+
+-- ── limits (ε-δ semantics is the *definition* of HasLimitAt) ────────
+
+/-- ε-δ characterization: this axiom ties the primitive `HasLimitAt` to
+    its classical definition. -/
+axiom hasLimitAt_def (f : ℝ → ℝ) (a L : ℝ) :
+  HasLimitAt(f, a, L) ↔
+    (∀ (ε : ℝ), 0 < ε → ∃ (δ : ℝ), 0 < δ ∧
+      (∀ (x : ℝ), x ≠ a → abs(x - a) < δ → abs(f(x) - L) < ε))
+
+axiom limit_spec (f : ℝ → ℝ) (a L : ℝ) :
+  HasLimitAt(f, a, L) → limit(f, a) = L
+
+axiom hasLimitAt_const (c a : ℝ) : HasLimitAt(λ (x : ℝ) => c, a, c)
+axiom hasLimitAt_id (a : ℝ) : HasLimitAt(λ (x : ℝ) => x, a, a)
+
+axiom hasLimitAt_add (f g : ℝ → ℝ) (a L M : ℝ) :
+  HasLimitAt(f, a, L) → HasLimitAt(g, a, M) →
+  HasLimitAt(λ (x : ℝ) => f(x) + g(x), a, L + M)
+
+axiom hasLimitAt_mul (f g : ℝ → ℝ) (a L M : ℝ) :
+  HasLimitAt(f, a, L) → HasLimitAt(g, a, M) →
+  HasLimitAt(λ (x : ℝ) => f(x) * g(x), a, L * M)
+
+-- ── continuity ──────────────────────────────────────────────────────
+
+axiom continuousAt_def (f : ℝ → ℝ) (a : ℝ) :
+  ContinuousAt(f, a) ↔ HasLimitAt(f, a, f(a))
+
+axiom continuous_def (f : ℝ → ℝ) :
+  Continuous(f) ↔ (∀ (a : ℝ), ContinuousAt(f, a))
+
+axiom continuous_const (c : ℝ) : Continuous(λ (x : ℝ) => c)
+axiom continuous_id : Continuous(λ (x : ℝ) => x)
+axiom continuous_sin : Continuous(Real.sin)
+axiom continuous_cos : Continuous(Real.cos)
+axiom continuous_exp : Continuous(Real.exp)
+
+axiom Continuous.add (f g : ℝ → ℝ) :
+  Continuous(f) → Continuous(g) → Continuous(λ (x : ℝ) => f(x) + g(x))
+axiom Continuous.mul (f g : ℝ → ℝ) :
+  Continuous(f) → Continuous(g) → Continuous(λ (x : ℝ) => f(x) * g(x))
+axiom Continuous.comp (f g : ℝ → ℝ) :
+  Continuous(f) → Continuous(g) → Continuous(λ (x : ℝ) => f(g(x)))
+
+/-- Intermediate value theorem (axiomatized). -/
+axiom intermediate_value (f : ℝ → ℝ) (a b y : ℝ) :
+  Continuous(f) → a ≤ b → f(a) ≤ y → y ≤ f(b) →
+  ∃ (c : ℝ), a ≤ c ∧ c ≤ b ∧ f(c) = y
+
+-- ── derivatives ─────────────────────────────────────────────────────
+
+axiom hasDerivAt_def (f : ℝ → ℝ) (a L : ℝ) :
+  HasDerivAt(f, a, L) ↔
+    HasLimitAt(λ (h : ℝ) => (f(a + h) - f(a)) / h, 0, L)
+
+axiom deriv_spec (f : ℝ → ℝ) (a L : ℝ) :
+  HasDerivAt(f, a, L) → deriv(f)(a) = L
+
+axiom deriv_sin : deriv(Real.sin) = Real.cos
+axiom deriv_exp : deriv(Real.exp) = Real.exp
+axiom deriv_const (c : ℝ) : deriv(λ (x : ℝ) => c) = (λ (x : ℝ) => (0 : ℝ))
+axiom deriv_id : deriv(λ (x : ℝ) => x) = (λ (x : ℝ) => (1 : ℝ))
+
+/-- Fundamental theorem of calculus, part 2 (axiomatized):
+    if F' = f then ∫[a,b] f = F(b) - F(a). -/
+axiom ftc (F : ℝ → ℝ) (f : ℝ → ℝ) (a b : ℝ) :
+  Continuous(f) → deriv(F) = f →
+  integral(f, a, b) = F(b) - F(a)

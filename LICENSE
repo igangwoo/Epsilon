@@ -1,0 +1,65 @@
+Epsilon Source-Available License (ESAL) v1.0
+
+Copyright (c) 2026 igangwoo (https://github.com/igangwoo)
+All rights reserved.
+
+Contact for licensing: igangwoo.unite@gmail.com
+
+1. DEFINITIONS
+   "Software" means the Epsilon project: all source code, standard library
+   files, documentation, assets, and any output artifacts contained in this
+   repository.
+   "Author" means the copyright holder named above.
+   "Commercial Use" means any use of the Software, in whole or in part,
+   that is intended for, or directed toward, commercial advantage or
+   monetary compensation, including but not limited to: use inside a
+   company or other for-profit organization, use in paid products or
+   services, use in paid consulting or contract work, SaaS offerings,
+   and internal business tooling.
+
+2. GRANT (NON-COMMERCIAL USE ONLY)
+   Subject to the conditions below, the Author grants you a worldwide,
+   royalty-free, non-exclusive, non-transferable license to:
+   (a) view and study the source code of the Software;
+   (b) run the Software, unmodified, for personal, educational, or
+       academic research purposes.
+
+3. COMMERCIAL USE REQUIRES A PAID LICENSE
+   Any Commercial Use of the Software is prohibited without a separate,
+   written, paid commercial license agreement with the Author. To obtain
+   a commercial license, contact the Author at the address above.
+
+4. NO MODIFICATION
+   You may NOT modify, adapt, translate, or create derivative works of
+   the Software, in whole or in part. This includes, without limitation,
+   patching, forking with changes, transpiling, or incorporating any part
+   of the Software's source code into other software. (Forking on a code
+   hosting platform solely as an unmodified mirror for reading purposes
+   is permitted.)
+
+5. NO REDISTRIBUTION
+   You may not sell, sublicense, rent, lease, or otherwise redistribute
+   the Software or any part of it, except for unmodified mirrors as
+   described in Section 4.
+
+6. PRESERVATION OF NOTICES
+   You must retain this license text and all copyright notices in every
+   copy of the Software.
+
+7. TERMINATION
+   This license terminates automatically if you violate any of its terms.
+   Upon termination you must cease all use of the Software and destroy
+   all copies in your possession.
+
+8. NO WARRANTY
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+   OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+   IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+   FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+
+9. RESERVATION OF RIGHTS
+   All rights not expressly granted in this license are reserved by the
+   Author.

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epsilon-math"
+version = "0.1.0"
+description = "Epsilon: a unified mathematical computing environment - language, proof system, CAS, and IDE"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "igangwoo" }]
+keywords = ["mathematics", "theorem-prover", "cas", "proof-assistant", "dsl"]
+dependencies = []
+
+[project.optional-dependencies]
+server = ["fastapi>=0.110", "uvicorn>=0.27"]
+dev = ["pytest>=8.0", "fastapi>=0.110", "uvicorn>=0.27", "httpx>=0.27"]
+
+[project.scripts]
+epsilon = "epsilon.cli:main"
+3psilon = "epsilon.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["epsilon*"]
+
+[tool.setuptools.package-data]
+epsilon = ["lib/**/*.epsl", "server/static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

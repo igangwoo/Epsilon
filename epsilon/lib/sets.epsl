@@ -1,0 +1,42 @@
+-- ═══════════════════════════════════════════════════════════════════
+-- Epsilon standard library · sets
+-- Typed set theory (sets as predicates over a type), with set-builder
+-- notation { x : T | p }.
+-- ═══════════════════════════════════════════════════════════════════
+
+axiom mem_setOf {A : Type} (p : A → Prop) (a : A) :
+  (a ∈ setOf(A, p)) ↔ p(a)
+
+axiom mem_setOf_intro {A : Type} (p : A → Prop) (a : A) :
+  p(a) → (a ∈ setOf(A, p))
+
+axiom mem_setOf_elim {A : Type} (p : A → Prop) (a : A) :
+  (a ∈ setOf(A, p)) → p(a)
+
+/-- Set extensionality. -/
+axiom Set.ext {A : Type} (s t : Set(A)) :
+  (∀ (x : A), (x ∈ s) ↔ (x ∈ t)) → s = t
+
+def Set.union {A : Type} (s t : Set(A)) : Set(A) :=
+  setOf(A, λ (x : A) => (x ∈ s) ∨ (x ∈ t))
+
+def Set.inter {A : Type} (s t : Set(A)) : Set(A) :=
+  setOf(A, λ (x : A) => (x ∈ s) ∧ (x ∈ t))
+
+def Set.empty (A : Type) : Set(A) :=
+  setOf(A, λ (x : A) => False)
+
+def Set.univ (A : Type) : Set(A) :=
+  setOf(A, λ (x : A) => True)
+
+theorem Set.subset_refl {A : Type} (s : Set(A)) : s ⊆ s := by
+  intro x
+  intro h
+  exact h
+
+theorem Set.mem_union_left {A : Type} (s t : Set(A)) (x : A)
+    (h : x ∈ s) : x ∈ Set.union(s, t) := by
+  unfold Set.union
+  apply mem_setOf_intro
+  left
+  exact h
