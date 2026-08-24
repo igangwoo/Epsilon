@@ -362,3 +362,90 @@ def mathify(expr, language="python"):
         return json.dumps({"ok": False, "message": str(e)})
     forms = _term_forms(session.env, term)
     return json.dumps({"ok": True, **forms})
+
+
+# ---------------------------------------------------------------------------
+# programming-IDE services (browser build)
+# ---------------------------------------------------------------------------
+# What the browser genuinely has: Python execution and completion (this very
+# interpreter). What it does not have — a shell, git, a debugger that can
+# suspend execution, black/clang-format — is reported absent, and the IDE
+# disables those commands with the reason, instead of imitating them.
+
+def ide_capabilities():
+    from epsilon.runtime.completion import HAS_JEDI
+    return json.dumps({
+        "run": {"python": True, "cpp": False},
+        "terminal": False,        # no operating system to give a shell to
+        "debug": {"python": False, "cpp": False},   # needs a suspendable
+        "format": {"python": False, "cpp": False},  # process: server build
+        "completions": {"python": "semantic" if HAS_JEDI else "lexical",
+                        "cpp": "lexical"},
+        "git": False,
+    })
+
+
+def complete(language, code, line, col, path=""):
+    from epsilon.runtime.completion import complete as _complete
+    return json.dumps(_complete(language, code, int(line), int(col),
+                                path or ""))
+
+
+def search_files(files_json, query, regex=False, case=False, word=False):
+    """Search the browser workspace. `files_json` is {path: content}."""
+    from epsilon.runtime.wsearch import SearchError, _compile
+    try:
+        pat = _compile(query, regex=bool(regex), case=bool(case),
+                       word=bool(word))
+    except SearchError as e:
+        return json.dumps({"ok": False, "message": str(e), "results": []})
+    results = []
+    truncated = False
+    files = json.loads(files_json) if isinstance(files_json, str) else files_json
+    for path in sorted(files):
+        for line_no, line in enumerate(files[path].split("\n"), 1):
+            for m in pat.finditer(line):
+                if len(results) >= 2000:
+                    truncated = True
+                    break
+                results.append({"path": path, "line": line_no,
+                                "col": m.start(),
+                                "length": max(1, m.end() - m.start()),
+                                "preview": line[:400]})
+                if m.start() == m.end():
+                    break
+            if truncated:
+                break
+        if truncated:
+            break
+    return json.dumps({"ok": True, "results": results, "truncated": truncated,
+                       "files": len({r["path"] for r in results})})
+
+
+def replace_files(files_json, query, replacement, regex=False, case=False,
+                  word=False, paths_json=None):
+    """Replace across the browser workspace; returns the changed files.
+
+    The caller (boot.js) owns the file store, so this returns new contents
+    for it to write back — the same Python regex dialect as the server.
+    """
+    from epsilon.runtime.wsearch import SearchError, _compile
+    try:
+        pat = _compile(query, regex=bool(regex), case=bool(case),
+                       word=bool(word))
+    except SearchError as e:
+        return json.dumps({"ok": False, "message": str(e)})
+    if not regex:
+        replacement = replacement.replace("\\", "\\\\")
+    files = json.loads(files_json) if isinstance(files_json, str) else files_json
+    wanted = set(json.loads(paths_json)) if paths_json else None
+    changed, counts = {}, {}
+    for path, text in files.items():
+        if wanted is not None and path not in wanted:
+            continue
+        new_text, n = pat.subn(replacement, text)
+        if n:
+            changed[path] = new_text
+            counts[path] = n
+    return json.dumps({"ok": True, "changed": changed, "files": counts,
+                       "replacements": sum(counts.values())})

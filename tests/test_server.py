@@ -24,8 +24,10 @@ def test_meta(client):
 
 
 def test_welcome_file_created(client):
-    files = client.get("/api/files").json()["files"]
-    assert any(f["name"] == "main.epsl" for f in files)
+    """A fresh workspace opens on a runnable Python file — the IDE's
+    primary identity in this phase is programming, not mathematics."""
+    entries = client.get("/api/files").json()["entries"]
+    assert any(e["name"] == "main.py" for e in entries)
 
 
 def test_file_crud_roundtrip(client):

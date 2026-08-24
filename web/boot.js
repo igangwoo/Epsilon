@@ -97,6 +97,73 @@ plot Real.sin, x ∈ [-6, 6]
       return jsonResponse(JSON.parse(out));
     }
 
+    if (path === "/api/capabilities") {
+      return jsonResponse(JSON.parse(
+        PY.runPython("import bridge; bridge.ide_capabilities()")));
+    }
+
+    if (path === "/api/complete") {
+      PY.globals.set("_lang", body.language || "");
+      PY.globals.set("_code", body.code || "");
+      PY.globals.set("_ln", body.line || 1);
+      PY.globals.set("_col", body.col || 0);
+      PY.globals.set("_pth", body.path || "");
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.complete(_lang, _code, _ln, _col, _pth)")));
+    }
+
+    if (path === "/api/format") {
+      return jsonResponse({ ok: false, message:
+        "formatters (black, clang-format) need the server build" });
+    }
+
+    if (path === "/api/search") {
+      PY.globals.set("_files", JSON.stringify(FILES));
+      PY.globals.set("_q", body.query || "");
+      PY.globals.set("_re", !!body.regex);
+      PY.globals.set("_cs", !!body.case);
+      PY.globals.set("_wd", !!body.word);
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.search_files(_files, _q, _re, _cs, _wd)")));
+    }
+
+    if (path === "/api/replace") {
+      PY.globals.set("_files", JSON.stringify(FILES));
+      PY.globals.set("_q", body.query || "");
+      PY.globals.set("_rep", body.replacement || "");
+      PY.globals.set("_re", !!body.regex);
+      PY.globals.set("_cs", !!body.case);
+      PY.globals.set("_wd", !!body.word);
+      PY.globals.set("_pths", body.paths ? JSON.stringify(body.paths) : "");
+      const r = JSON.parse(PY.runPython(
+        "import bridge; bridge.replace_files(_files, _q, _rep, _re, _cs, _wd, _pths or None)"));
+      if (r.ok && r.changed) {
+        Object.keys(r.changed).forEach((p) => {
+          VFS.handle("/api/file", "PUT", { path: p, content: r.changed[p] }, {});
+        });
+        delete r.changed;
+      }
+      return jsonResponse(r);
+    }
+
+    if (path.startsWith("/api/terminal")) {
+      return jsonResponse({ ok: false, message:
+        "there is no operating system to give a shell to in the browser " +
+        "build — the server build (epsilon serve) has real terminals" }, 501);
+    }
+
+    if (path.startsWith("/api/debug")) {
+      return jsonResponse({ ok: false, message:
+        "debugging needs a process that can be suspended; the browser " +
+        "build cannot do that — use the server build" }, 501);
+    }
+
+    if (path.startsWith("/api/git")) {
+      return jsonResponse({ ok: false, repo: false, message:
+        "git is not available in the browser build — use the server " +
+        "build for source control" }, 501);
+    }
+
     if (path === "/api/run/languages") {
       return jsonResponse(JSON.parse(
         PY.runPython("import bridge; bridge.run_languages()")));
@@ -387,6 +454,8 @@ plot Real.sin, x ∈ [-6, 6]
         "import micropip\nawait micropip.install(_wheel)");
 
       step("Loading the bridge…", 78);
+      // jedi ships with Pyodide; without it completions fall back to lexical
+      try { await PY.loadPackage("jedi"); } catch (e) { /* lexical then */ }
       const bridgeSrc = await (await realFetch("./bridge.py")).text();
       PY.FS.writeFile("bridge.py", bridgeSrc);
 

@@ -24,24 +24,33 @@ from ..project import Session, STATUS_LABELS
 from ..repl import Repl
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
-WELCOME = """\
--- Welcome to Epsilon. Press ▶ Check (or Ctrl/Cmd+Enter) to verify.
+WELCOME = """# Welcome to Epsilon.
+# A programming IDE in your browser - Python and C++, for real.
+#
+# Press  Run (Ctrl/Cmd+Enter)  to execute this file.
 
-/-- The sinc function, f(x) = sin(x)/x. -/
-def f (x : Real) : Real := Real.sin(x) / x
+import math
 
-/-- Addition on ℕ is commutative — proved by induction. -/
-theorem add_comm (a b : Nat) : a + b = b + a := by
-  induction b with
-  | zero => rw [Nat.add_zero, Nat.zero_add]
-  | succ n ih => rw [Nat.add_succ, Nat.succ_add, ih]
 
-theorem two_le_three : 2 ≤ 3 := by decide
+def sinc(x: float) -> float:
+    'sin(x)/x, with the removable singularity filled in.'
+    return math.sin(x) / x if x else 1.0
 
-#check f
-#eval 2 + 3 * 4
 
-plot Real.sin, x ∈ [-6, 6]
+if __name__ == "__main__":
+    for i in range(5):
+        x = i / 2
+        print(f"sinc({x:.1f}) = {sinc(x):.4f}")
+"""
+
+#: the previous, mathematics-first welcome file - preserved with the
+#: mathematics subsystem, shown again when it is re-enabled
+WELCOME_MATH = """-- Welcome to Epsilon.
+-- Press Check to verify.
+
+theorem add_zero_demo (a : Nat) : a + 0 = a := by rfl
+
+plot Real.sin, x in [-6, 6]
 """
 
 
@@ -149,8 +158,8 @@ def _unique_path(full: str) -> str:
 
 def _ensure_welcome() -> None:
     ws = _workspace()
-    if not any(f.endswith(".epsl") for f in os.listdir(ws)):
-        with open(os.path.join(ws, "main.epsl"), "w", encoding="utf-8") as fh:
+    if not os.listdir(ws):
+        with open(os.path.join(ws, "main.py"), "w", encoding="utf-8") as fh:
             fh.write(WELCOME)
 
 
@@ -281,6 +290,65 @@ class RunRequest(BaseModel):
     filename: str = ""
 
 
+class CompleteRequest(BaseModel):
+    language: str
+    code: str
+    line: int
+    col: int
+    path: str = ""
+
+
+class FormatRequest(BaseModel):
+    language: str
+    code: str
+
+
+class SearchRequest(BaseModel):
+    query: str
+    regex: bool = False
+    case: bool = False
+    word: bool = False
+
+
+class ReplaceRequest(SearchRequest):
+    replacement: str = ""
+    paths: Optional[list[str]] = None
+
+
+class TerminalIn(BaseModel):
+    data: str = ""
+
+
+class TerminalResize(BaseModel):
+    rows: int = 24
+    cols: int = 80
+
+
+class DebugStart(BaseModel):
+    code: str
+    filename: str = "main.py"
+    breakpoints: list[int] = []
+
+
+class DebugCommand(BaseModel):
+    op: str
+    expr: str = ""
+    breakpoints: Optional[list[int]] = None
+
+
+class GitPaths(BaseModel):
+    paths: list[str] = []
+
+
+class GitCommit(BaseModel):
+    message: str
+
+
+class GitCheckout(BaseModel):
+    ref: str
+    create: bool = False
+
+
 class PyReplRequest(BaseModel):
     code: str
     reset: bool = False
@@ -326,7 +394,11 @@ def create_app() -> FastAPI:
                        allow_methods=["*"], allow_headers=["*"])
 
     from ..runtime.pyrepl import PythonRepl
+    from ..runtime.pydebug import DebugManager
+    from ..runtime.terminal import TerminalManager
     repl_state = {"repl": Repl(), "pyrepl": PythonRepl()}
+    terminals = TerminalManager()
+    debuggers = DebugManager()
 
     # -------------------- files --------------------
     @app.get("/api/files")
@@ -471,6 +543,214 @@ def create_app() -> FastAPI:
                     "plots": [], "traces": {}, "deps": {"nodes": [], "edges": []}}
 
     # -------------------- eval (persistent) --------------------
+    # -------------------- IDE services --------------------
+    @app.get("/api/capabilities")
+    def capabilities() -> dict:
+        """What this machine can actually do. The IDE only offers the truth:
+        a command whose capability is absent is disabled with this reason."""
+        from ..runtime import available_languages
+        from ..runtime.completion import HAS_JEDI
+        from ..runtime.format_code import format_capabilities
+        from ..runtime import gitwork
+        return {
+            "run": available_languages(),
+            "terminal": True,
+            "debug": {"python": True, "cpp": False},
+            "format": format_capabilities(),
+            "completions": {"python": "semantic" if HAS_JEDI else "lexical",
+                            "cpp": "lexical"},
+            "git": gitwork.available(),
+        }
+
+    @app.post("/api/complete")
+    def complete_code(req: CompleteRequest) -> dict:
+        from ..runtime.completion import complete
+        return complete(req.language, req.code, req.line, req.col, req.path)
+
+    @app.post("/api/format")
+    def format_document(req: FormatRequest) -> dict:
+        from ..runtime.format_code import format_code
+        return format_code(req.language, req.code)
+
+    @app.post("/api/search")
+    def search_workspace(req: SearchRequest) -> dict:
+        from ..runtime.wsearch import SearchError, search
+        try:
+            return search(_workspace(), _entries(), req.query,
+                          regex=req.regex, case=req.case, word=req.word)
+        except SearchError as e:
+            return {"ok": False, "message": str(e), "results": []}
+
+    @app.post("/api/replace")
+    def replace_workspace(req: ReplaceRequest, request: Request) -> dict:
+        _require_same_origin(request)
+        from ..runtime.wsearch import SearchError, replace
+        try:
+            return replace(_workspace(), _entries(), req.query,
+                           req.replacement, regex=req.regex, case=req.case,
+                           word=req.word, paths=req.paths)
+        except SearchError as e:
+            return {"ok": False, "message": str(e)}
+
+    # -------------------- terminal --------------------
+    @app.post("/api/terminal")
+    def terminal_create(request: Request) -> dict:
+        _require_same_origin(request)
+        session = terminals.create(_workspace())
+        return {"ok": True, "id": session.id}
+
+    @app.get("/api/terminal")
+    def terminal_list() -> dict:
+        return {"terminals": terminals.list()}
+
+    @app.get("/api/terminal/{sid}")
+    def terminal_read(sid: str, since: int = 0) -> dict:
+        session = terminals.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="no such terminal")
+        data, cursor = session.read(since)
+        return {"data": data, "cursor": cursor, "alive": session.alive,
+                "exit_code": session.exit_code}
+
+    @app.post("/api/terminal/{sid}/input")
+    def terminal_input(sid: str, req: TerminalIn, request: Request) -> dict:
+        _require_same_origin(request)
+        session = terminals.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="no such terminal")
+        session.write(req.data)
+        return {"ok": True}
+
+    @app.post("/api/terminal/{sid}/resize")
+    def terminal_resize(sid: str, req: TerminalResize,
+                        request: Request) -> dict:
+        _require_same_origin(request)
+        session = terminals.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="no such terminal")
+        session.resize(req.rows, req.cols)
+        return {"ok": True}
+
+    @app.delete("/api/terminal/{sid}")
+    def terminal_kill(sid: str, request: Request) -> dict:
+        _require_same_origin(request)
+        terminals.kill(sid)
+        return {"ok": True}
+
+    # -------------------- debugging --------------------
+    @app.post("/api/debug")
+    def debug_start(req: DebugStart, request: Request) -> dict:
+        _require_same_origin(request)
+        session = debuggers.start(req.code, req.filename, req.breakpoints)
+        return {"ok": True, "id": session.id}
+
+    @app.get("/api/debug/{sid}")
+    def debug_events(sid: str, since: int = 0) -> dict:
+        session = debuggers.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="no such session")
+        events, cursor = session.events(since)
+        return {"events": events, "cursor": cursor, "alive": session.alive}
+
+    @app.post("/api/debug/{sid}/cmd")
+    def debug_command(sid: str, req: DebugCommand, request: Request) -> dict:
+        _require_same_origin(request)
+        session = debuggers.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="no such session")
+        extra = {}
+        if req.op == "eval":
+            extra["expr"] = req.expr
+        if req.op == "setbp":
+            extra["breakpoints"] = req.breakpoints or []
+        session.command(req.op, **extra)
+        return {"ok": True}
+
+    @app.delete("/api/debug/{sid}")
+    def debug_stop(sid: str, request: Request) -> dict:
+        _require_same_origin(request)
+        debuggers.stop(sid)
+        return {"ok": True}
+
+    # -------------------- git --------------------
+    @app.get("/api/git/status")
+    def git_status() -> dict:
+        from ..runtime import gitwork
+        try:
+            return gitwork.status(_workspace())
+        except gitwork.GitError as e:
+            return {"ok": False, "message": str(e)}
+
+    @app.post("/api/git/init")
+    def git_init(request: Request) -> dict:
+        _require_same_origin(request)
+        from ..runtime import gitwork
+        try:
+            gitwork.init(_workspace())
+            return {"ok": True}
+        except gitwork.GitError as e:
+            return {"ok": False, "message": str(e)}
+
+    @app.post("/api/git/stage")
+    def git_stage(req: GitPaths, request: Request) -> dict:
+        return _git_paths_op("stage", req, request)
+
+    @app.post("/api/git/unstage")
+    def git_unstage(req: GitPaths, request: Request) -> dict:
+        return _git_paths_op("unstage", req, request)
+
+    @app.post("/api/git/discard")
+    def git_discard(req: GitPaths, request: Request) -> dict:
+        return _git_paths_op("discard", req, request)
+
+    def _git_paths_op(op: str, req: GitPaths, request: Request) -> dict:
+        _require_same_origin(request)
+        from ..runtime import gitwork
+        try:
+            getattr(gitwork, op)(_workspace(), req.paths)
+            return {"ok": True}
+        except gitwork.GitError as e:
+            return {"ok": False, "message": str(e)}
+
+    @app.post("/api/git/commit")
+    def git_commit(req: GitCommit, request: Request) -> dict:
+        _require_same_origin(request)
+        from ..runtime import gitwork
+        try:
+            return {"ok": True,
+                    "hash": gitwork.commit(_workspace(), req.message)}
+        except gitwork.GitError as e:
+            return {"ok": False, "message": str(e)}
+
+    @app.get("/api/git/diff")
+    def git_diff(path: Optional[str] = None, staged: bool = False) -> dict:
+        from ..runtime import gitwork
+        try:
+            return {"ok": True,
+                    "diff": gitwork.diff(_workspace(), path, staged)}
+        except gitwork.GitError as e:
+            return {"ok": False, "message": str(e)}
+
+    @app.get("/api/git/log")
+    def git_log(limit: int = 30) -> dict:
+        from ..runtime import gitwork
+        return {"ok": True, "entries": gitwork.log(_workspace(), limit)}
+
+    @app.get("/api/git/branches")
+    def git_branches() -> dict:
+        from ..runtime import gitwork
+        return {"ok": True, **gitwork.branches(_workspace())}
+
+    @app.post("/api/git/checkout")
+    def git_checkout(req: GitCheckout, request: Request) -> dict:
+        _require_same_origin(request)
+        from ..runtime import gitwork
+        try:
+            gitwork.checkout(_workspace(), req.ref, req.create)
+            return {"ok": True}
+        except gitwork.GitError as e:
+            return {"ok": False, "message": str(e)}
+
     # -------------------- running programs --------------------
     @app.get("/api/run/languages")
     def run_languages() -> dict:
