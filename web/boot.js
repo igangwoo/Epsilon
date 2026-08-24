@@ -11,6 +11,10 @@
   const PYODIDE_VERSION = "0.26.2";
   const PYODIDE_CDN = `https://cdn.jsdelivr.net/pyodide/v${PYODIDE_VERSION}/full/`;
   const WHEEL = "./epsilon_math-0.1.0-py3-none-any.whl";
+  //!BUILD_ID — stamped by scripts/build_web.py from the asset contents,
+  // so a fresh page can never pick up a stale cached script
+  const BUILD_ID = "783cbe45330e";
+  const CACHE_BUST = "?v=" + BUILD_ID;
 
   const realFetch = window.fetch.bind(window);
   const boot = document.getElementById("boot");
@@ -48,9 +52,11 @@ theorem two_le_three : 2 ≤ 3 := by decide
 plot Real.sin, x ∈ [-6, 6]
 `;
 
-  /* -------- the workspace (vfs.js) -------- */
-  const VFS = EpsilonVFS.create(window.localStorage, WELCOME);
-  const FILES = VFS.contents();
+  /* -------- the workspace (vfs.js) --------
+     Built in main(), not here: nothing may run before the error handling
+     below is in place, or a failure leaves a dead page with no message. */
+  let VFS = null;
+  let FILES = {};
 
   /* -------- JSON Response helper -------- */
   function jsonResponse(obj, status) {
@@ -217,8 +223,84 @@ plot Real.sin, x ∈ [-6, 6]
     }
   }
 
+  /**
+   * Make sure a script has run, loading it if the page did not.
+   *
+   * index.html and the scripts are separate files with separate cache
+   * lifetimes, so a returning visitor can hold an older index.html — one
+   * whose <script> tags predate a file this build needs — together with a
+   * fresh boot.js. Depending on those tags therefore breaks the page for
+   * exactly the people who have used it before. boot.js is the one file
+   * any cached index.html references, so it loads what it needs itself.
+   */
+  function ensureScript(src, globalName) {
+    if (window[globalName]) return Promise.resolve();
+    const existing = Array.from(document.scripts)
+      .find((s) => s.src && s.src.indexOf(src.replace("./", "")) !== -1);
+    if (existing && window[globalName]) return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const el = document.createElement("script");
+      el.src = src + CACHE_BUST;
+      el.onload = () => window[globalName]
+        ? resolve()
+        : reject(new Error(src + " loaded but did not define " + globalName));
+      el.onerror = () => reject(new Error("could not load " + src));
+      document.head.appendChild(el);
+    });
+  }
+
+  /** Show a failure on the page. A dead page with no message helps nobody. */
+  function fail(err, hint) {
+    const message = String(err && err.message ? err.message : err);
+    step("Startup failed.", 100);
+    detail("");
+    let host = document.getElementById("boot");
+    if (!host) {
+      // the IDE was already up, so paint a banner over it instead
+      host = document.createElement("div");
+      host.className = "boot-banner";
+      document.body.appendChild(host);
+    }
+    if (host.querySelector(".boot-error")) return;
+    const box = document.createElement("div");
+    box.className = "boot-error";
+    box.innerHTML = "<b>Could not start Epsilon.</b><br>" + escapeHTML(message) +
+      (hint ? "<br><br>" + hint : "");
+    const retry = document.createElement("button");
+    retry.className = "boot-retry";
+    retry.textContent = "Reload";
+    retry.onclick = () => window.location.reload();
+    box.appendChild(document.createElement("br"));
+    box.appendChild(retry);
+    host.appendChild(box);
+    // eslint-disable-next-line no-console
+    console.error(err);
+  }
+
+  function escapeHTML(s) {
+    return String(s).replace(/[&<>]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
+  window.addEventListener("error", (e) => {
+    if (e && e.message) fail(e.error || e.message);
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    if (e && e.reason) fail(e.reason);
+  });
+
   async function main() {
-    applyWebChrome();
+    try {
+      applyWebChrome();
+      // vfs.js and panes.js may or may not be in this page's HTML
+      await ensureScript("./vfs.js", "EpsilonVFS");
+      VFS = EpsilonVFS.create(window.localStorage, WELCOME);
+      FILES = VFS.contents();
+      await ensureScript("./panes.js", "EpsilonPanes");
+    } catch (err) {
+      fail(err);
+      return;
+    }
     try {
       step("Loading the Python runtime (Pyodide)…", 8);
       detail("first load fetches ~10 MB and is cached afterwards");
@@ -250,27 +332,16 @@ plot Real.sin, x ∈ [-6, 6]
 
       // hand off to the (unmodified) IDE
       const app = document.createElement("script");
-      app.src = "./app.js";
+      app.src = "./app.js" + CACHE_BUST;
       app.onload = () => {
         if (boot) { boot.style.opacity = "0";
           setTimeout(() => boot.remove(), 400); }
       };
       document.body.appendChild(app);
     } catch (err) {
-      step("Startup failed.", 100);
-      detail("");
-      if (boot) {
-        const box = document.createElement("div");
-        box.className = "boot-error";
-        box.innerHTML = "<b>Could not start Epsilon.</b><br>" +
-          String(err && err.message ? err.message : err) +
-          "<br><br>This page needs one-time network access to the Pyodide CDN " +
-          "(cdn.jsdelivr.net). If your network blocks it, try another network " +
-          "or host Pyodide alongside these files.";
-        boot.appendChild(box);
-      }
-      // eslint-disable-next-line no-console
-      console.error(err);
+      fail(err, "This page needs one-time network access to the Pyodide CDN " +
+                "(cdn.jsdelivr.net). If your network blocks it, try another " +
+                "network or host Pyodide alongside these files.");
     }
   }
 

@@ -68,3 +68,23 @@ Actions 가 자동으로 재배포합니다.
 Epsilon 은 **Source-Available** 라이선스(ESAL v1.0)입니다:
 개인·학술 무료, **상업 사용은 유료** — igangwoo.unite@gmail.com 로 문의.
 자신의 도메인에 배포해 개인적으로 쓰거나 공부·수업에 쓰는 것은 자유입니다.
+
+---
+
+## 캐시에 대해 (why the asset URLs carry `?v=...`)
+
+`index.html` 과 스크립트 파일들은 각각 따로 캐시됩니다. 그래서 예전에
+방문한 적이 있는 사람은 **오래된 index.html + 새로운 스크립트** 조합을
+받을 수 있습니다. 새 스크립트가 예전 HTML 에는 없는 파일을 필요로 하면,
+그 사람에게만 페이지가 완전히 죽습니다 (처음 방문한 사람은 멀쩡함).
+
+그래서 두 가지를 합니다.
+
+1. `scripts/build_web.py` 가 자산 내용의 해시를 계산해 모든 자산 URL 에
+   `?v=<build id>` 를 붙입니다. 오래된 스크립트가 새 페이지에 섞일 수
+   없습니다.
+2. `boot.js` 가 필요한 스크립트(`vfs.js`, `panes.js`, `app.js`)를 직접
+   불러옵니다. `index.html` 의 `<script>` 태그에 의존하지 않으므로,
+   아무리 오래된 HTML 이 캐시되어 있어도 부팅됩니다.
+
+`tests/test_web_boot.py` 가 실제 브라우저에서 이 두 가지를 확인합니다.

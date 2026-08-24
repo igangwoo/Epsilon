@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Epsilon</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c78ff'/%3E%3Ctext x='16' y='23' font-size='21' font-family='Georgia,serif' fill='white' text-anchor='middle'%3E%CE%B5%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="app.css" />
+  <link rel="stylesheet" href="app.css?v=783cbe45330e" />
   <!-- web-only overrides; app.css stays the shared source of truth -->
-  <link rel="stylesheet" href="web.css" />
-  <script src="vfs.js"></script>
+  <link rel="stylesheet" href="web.css?v=783cbe45330e" />
+  <script src="vfs.js?v=783cbe45330e"></script>
   <style>
     /* one-time boot overlay while Pyodide + the engine load */
     #boot {
@@ -37,6 +37,18 @@
       border-radius: 12px; background: rgba(255,92,114,0.12);
       border: 1px solid rgba(255,92,114,0.4); font-size: 12.5px; line-height: 1.5;
       color: #ffb3bf; }
+    /* a failure after the IDE is up has no boot overlay to live in */
+    .boot-banner {
+      position: fixed; inset: auto 16px 16px auto; z-index: 200;
+      max-width: min(440px, calc(100vw - 32px));
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    }
+    .boot-retry {
+      margin-top: 10px; padding: 6px 14px; border-radius: 8px; cursor: pointer;
+      border: 1px solid rgba(255,92,114,0.5); background: rgba(255,92,114,0.15);
+      color: #ffb3bf; font: inherit; font-size: 12.5px;
+    }
+    .boot-retry:hover { background: rgba(255,92,114,0.28); }
     @media (prefers-reduced-motion: reduce) { #boot .logo { animation: none; } }
   </style>
 </head>
@@ -263,7 +275,7 @@
   <!-- toasts -->
   <div class="toast-stack" id="toastStack"></div>
 
-  <script src="panes.js"></script>
-  <script src="boot.js"></script>
+  <script src="panes.js?v=783cbe45330e"></script>
+  <script src="boot.js?v=783cbe45330e"></script>
 </body>
 </html>

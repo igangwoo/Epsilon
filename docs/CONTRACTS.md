@@ -263,6 +263,19 @@ tab, then loads the *unmodified* `app.js`.
 `python3 scripts/build_web.py [--wheel]` regenerates it. `tests/test_web_build.py`
 fails if the two builds drift.
 
+Two rules keep the deploy from breaking for returning visitors, whose cached
+`index.html` can be older than the scripts it pairs with:
+
+* every asset URL carries `?v=<build id>`, a hash over the assets, so a
+  cached script can never pair with a differently-built page;
+* `boot.js` loads `vfs.js`, `panes.js` and `app.js` itself rather than
+  trusting the page's `<script>` tags, so any cached HTML still boots.
+
+`tests/test_web_boot.py` runs the built site in a headless browser (CPython
+standing in for Pyodide) against an index.html stripped back to `boot.js`
+alone, and checks that a missing asset is reported on the page rather than
+leaving it dead.
+
 `web/vfs.js` is the browser workspace: the file/folder/rename/duplicate half
 of the API above, against a `{path: content}` map in localStorage, with the
 same status codes for the same requests. `tests/test_web_vfs.py` runs the

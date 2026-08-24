@@ -31,8 +31,45 @@ def test_generated_index_matches_the_build_script():
         import build_web
     finally:
         sys.path.pop(0)
-    assert build_web.build_index() == (WEB / "index.html").read_text(), (
+    version = build_web.build_id()
+    assert build_web.build_index(version) == (WEB / "index.html").read_text(), (
         "web/index.html is stale; run `python3 scripts/build_web.py`")
+
+
+def test_assets_carry_the_build_id():
+    """A cached script must never pair with a differently-built page."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import build_web
+    finally:
+        sys.path.pop(0)
+    version = build_web.build_id()
+    html = (WEB / "index.html").read_text()
+    for name in ("app.css", "boot.js", "panes.js", "vfs.js", "web.css"):
+        assert f"{name}?v={version}" in html, f"{name} is not cache-busted"
+    # app.js is loaded by boot.js rather than by a tag, and gets the same id
+    boot = (WEB / "boot.js").read_text()
+    assert f'const BUILD_ID = "{version}";' in boot
+    assert 'app.src = "./app.js" + CACHE_BUST;' in boot
+
+
+def test_the_build_id_is_stable():
+    """Two builds of the same sources must produce the same id."""
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import build_web
+    finally:
+        sys.path.pop(0)
+    assert build_web.build_id() == build_web.build_id()
+
+
+def test_boot_loads_its_own_dependencies():
+    """boot.js is the one script a cached index.html is sure to reference,
+    so it must not depend on that page having any other tag."""
+    boot = (WEB / "boot.js").read_text()
+    for src, name in (("./vfs.js", "EpsilonVFS"), ("./panes.js", "EpsilonPanes")):
+        assert f'ensureScript("{src}", "{name}")' in boot, (
+            f"boot.js does not ensure {src} is loaded")
 
 
 def test_build_script_runs_clean():

@@ -16,7 +16,9 @@ Pyodide with micropip.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -30,7 +32,54 @@ SHELL = WEB / "shell"
 VERBATIM = ("app.js", "app.css", "panes.js")
 
 
-def build_index() -> str:
+#: assets whose URLs carry the build id, and where each one comes from
+STAMPED_FROM_STATIC = ("app.js", "app.css", "panes.js")
+STAMPED_FROM_WEB = ("vfs.js", "boot.js", "web.css")
+
+_BUILD_ID_LINE = re.compile(r'const BUILD_ID = "[^"]*";')
+
+
+def build_id() -> str:
+    """A short hash over everything the page loads.
+
+    index.html and the scripts it references are separate files with
+    separate cache lifetimes, so a returning visitor can otherwise hold an
+    older index.html together with a fresh script - which is how a page that
+    works for a new visitor is dead for everyone who used it before. Putting
+    the id in every asset URL makes a stale pairing impossible.
+
+    boot.js carries the id it is hashed into, so that one line is normalised
+    out; without it every build would produce a different id from the same
+    sources.
+    """
+    h = hashlib.sha256()
+    sources = [(STATIC / n) for n in STAMPED_FROM_STATIC]
+    sources += [(WEB / n) for n in STAMPED_FROM_WEB]
+    sources += [SHELL / "head.html", SHELL / "body.html", STATIC / "index.html"]
+    for path in sorted(sources):
+        if not path.exists():
+            continue
+        data = path.read_bytes()
+        if path.name == "boot.js":
+            data = _BUILD_ID_LINE.sub('const BUILD_ID = "";',
+                                      data.decode()).encode()
+        h.update(path.name.encode())
+        h.update(data)
+    return h.hexdigest()[:12]
+
+
+def stamp(html: str, version: str) -> str:
+    """Add `?v=<build id>` to every local asset URL in the page."""
+    def sub(match: re.Match) -> str:
+        attr, url = match.group(1), match.group(2)
+        if url.startswith(("http://", "https://", "data:", "#")) or "?" in url:
+            return match.group(0)
+        return f'{attr}="{url}?v={version}"'
+
+    return re.sub(r'\b(src|href)="([^"]+\.(?:js|css))"', sub, html)
+
+
+def build_index(version: str) -> str:
     """Splice the web shell into the server's index.html."""
     html = (STATIC / "index.html").read_text()
     head = (SHELL / "head.html").read_text()
@@ -50,7 +99,7 @@ def build_index() -> str:
         raise SystemExit("index.html does not load app.js")
     html = html.replace('<script src="app.js"></script>',
                         '<script src="boot.js"></script>', 1)
-    return html
+    return stamp(html, version)
 
 
 def build_wheel() -> None:
@@ -78,7 +127,13 @@ def main() -> int:
         shutil.copy2(STATIC / name, WEB / name)
         print(f"  copy   {name}")
 
-    (WEB / "index.html").write_text(build_index())
+    version = build_id()
+    boot = (WEB / "boot.js").read_text()
+    boot = _BUILD_ID_LINE.sub(f'const BUILD_ID = "{version}";', boot, count=1)
+    (WEB / "boot.js").write_text(boot)
+    print(f"  stamp  build {version}")
+
+    (WEB / "index.html").write_text(build_index(version))
     print("  build  index.html")
 
     if args.wheel:
