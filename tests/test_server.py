@@ -373,3 +373,59 @@ def test_suggest_on_an_unreadable_goal_is_200_with_a_message(client):
     assert body["ok"] is False
     assert body["message"]
     assert body["suggestions"] == []
+
+
+# --------------------------------------------------------------------------
+# running programs
+# --------------------------------------------------------------------------
+
+def test_run_python(client):
+    r = client.post("/api/run", json={"language": "python",
+                                      "code": "print(6 * 7)"}).json()
+    assert r["ok"] is True
+    assert r["stdout"] == "42\n"
+    assert r["exit_code"] == 0
+
+
+def test_run_reports_failure_honestly(client):
+    r = client.post("/api/run", json={"language": "python",
+                                      "code": "1/0"}).json()
+    assert r["ok"] is False
+    assert "ZeroDivisionError" in r["stderr"]
+    assert r["diagnostics"]
+
+
+def test_run_languages_listed(client):
+    langs = client.get("/api/run/languages").json()["languages"]
+    assert langs["python"] is True
+    assert "cpp" in langs
+
+
+def test_pyrepl_state_persists_across_requests(client):
+    client.post("/api/pyrepl", json={"code": "n = 6"})
+    r = client.post("/api/pyrepl", json={"code": "n * 7"}).json()
+    assert r["output"] == "42\n"
+
+
+def test_pyrepl_reset(client):
+    client.post("/api/pyrepl", json={"code": "n = 1"})
+    client.post("/api/pyrepl", json={"code": "", "reset": True})
+    r = client.post("/api/pyrepl", json={"code": "n"}).json()
+    assert "NameError" in r["error"]
+
+
+def test_code_execution_refuses_cross_origin_calls(client):
+    """Any web page can POST to localhost; only same-origin (or no-origin,
+    i.e. the user's own tools) may execute code."""
+    evil = {"Origin": "https://evil.example"}
+    for path, body in (("/api/run", {"language": "python", "code": "print(1)"}),
+                       ("/api/pyrepl", {"code": "1"})):
+        r = client.post(path, json=body, headers=evil)
+        assert r.status_code == 403, path
+
+
+def test_code_execution_allows_the_ide_itself(client):
+    r = client.post("/api/run",
+                    json={"language": "python", "code": "print(1)"},
+                    headers={"Origin": "http://testserver"})
+    assert r.status_code == 200

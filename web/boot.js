@@ -13,7 +13,7 @@
   const WHEEL = "./epsilon_math-0.1.0-py3-none-any.whl";
   //!BUILD_ID — stamped by scripts/build_web.py from the asset contents,
   // so a fresh page can never pick up a stale cached script
-  const BUILD_ID = "3fe632b1f2ae";
+  const BUILD_ID = "3e97dd0f6752";
   const CACHE_BUST = "?v=" + BUILD_ID;
 
   const realFetch = window.fetch.bind(window);
@@ -95,6 +95,27 @@ plot Real.sin, x ∈ [-6, 6]
       PY.globals.set("_code", body.code || "");
       const out = PY.runPython("import bridge; bridge.eval_code(_code)");
       return jsonResponse(JSON.parse(out));
+    }
+
+    if (path === "/api/run/languages") {
+      return jsonResponse(JSON.parse(
+        PY.runPython("import bridge; bridge.run_languages()")));
+    }
+
+    if (path === "/api/run") {
+      PY.globals.set("_lang", body.language || "");
+      PY.globals.set("_code", body.code || "");
+      PY.globals.set("_in", body.stdin || "");
+      PY.globals.set("_fn", body.filename || "");
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.run_program(_lang, _code, _in, _fn)")));
+    }
+
+    if (path === "/api/pyrepl") {
+      PY.globals.set("_code", body.code || "");
+      PY.globals.set("_rst", !!body.reset);
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.pyrepl(_code, _rst)")));
     }
 
     if (path === "/api/suggest") {

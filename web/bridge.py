@@ -235,3 +235,112 @@ def suggest(goal, hypotheses=None, limit=12):
                            "suggestions": []})
     return json.dumps({"ok": True, "goal": goal,
                        "suggestions": [s.as_dict() for s in found]})
+
+
+# ---------------------------------------------------------------------------
+# running programs (browser build)
+# ---------------------------------------------------------------------------
+# Python runs for real, in this same Pyodide interpreter — a fresh namespace
+# per run, streams captured, stdin served from the request. What cannot be
+# faithfully reproduced here is said out loud instead of imitated: there is
+# no subprocess, so no separate exit code beyond SystemExit, and a runaway
+# loop cannot be preempted (Pyodide shares the page's only thread).
+
+_py_console_ns = None
+
+
+def _trim_traceback(limit_file="main.py"):
+    """Format the active exception without the harness's own exec frame."""
+    import sys
+    import traceback
+    etype, evalue, tb = sys.exc_info()
+    if tb is not None and tb.tb_next is not None:
+        tb = tb.tb_next
+    return "".join(traceback.format_exception(etype, evalue, tb))
+
+
+def run_program(language, code, stdin="", filename=""):
+    import contextlib
+    import io
+    import time
+    if language == "cpp":
+        return json.dumps({
+            "ok": False, "language": "cpp", "phase": "compile",
+            "stdout": "", "stderr": "", "exit_code": None, "duration_ms": 0,
+            "diagnostics": [],
+            "message": "C++ needs a compiler, and this browser build has "
+                       "none — run the local server build (`epsilon serve`) "
+                       "for C++. Saying so beats pretending."})
+    if language != "python":
+        return json.dumps({
+            "ok": False, "language": language, "phase": "run",
+            "stdout": "", "stderr": "", "exit_code": None, "duration_ms": 0,
+            "diagnostics": [], "message":
+                f"'{language}' is not a runnable language here"})
+
+    name = filename or "main.py"
+    ns = {"__name__": "__main__", "__file__": name}
+    out, err = io.StringIO(), io.StringIO()
+    exit_code = 0
+    ok = True
+    t0 = time.time()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        old_stdin = None
+        import sys as _sys
+        old_stdin, _sys.stdin = _sys.stdin, io.StringIO(stdin or "")
+        try:
+            exec(compile(code, name, "exec"), ns)
+        except SystemExit as e:
+            exit_code = int(e.code or 0)
+            ok = exit_code == 0
+        except BaseException:
+            ok = False
+            exit_code = 1
+            err.write(_trim_traceback(name))
+        finally:
+            _sys.stdin = old_stdin
+    stderr = err.getvalue()
+    from epsilon.runtime.runner import python_diagnostics
+    return json.dumps({
+        "ok": ok, "language": "python", "phase": "run",
+        "stdout": out.getvalue(), "stderr": stderr,
+        "exit_code": exit_code, "duration_ms": int((time.time() - t0) * 1000),
+        "diagnostics": python_diagnostics(stderr, name),
+        "message": ""})
+
+
+def run_languages():
+    return json.dumps({"languages": {"python": True, "cpp": False}})
+
+
+def pyrepl(code, reset=False):
+    """The persistent Python console — this interpreter's own namespace."""
+    import contextlib
+    import io
+    global _py_console_ns
+    if reset or _py_console_ns is None:
+        _py_console_ns = {"__name__": "__console__", "__doc__": None}
+        if reset:
+            return json.dumps({"ok": True, "output": "", "error": "",
+                               "reset": True})
+    if not (code or "").strip():
+        return json.dumps({"ok": True, "output": "", "error": ""})
+    out, err = io.StringIO(), io.StringIO()
+    ok = True
+    try:
+        compiled = compile(code, "<console>", "single")
+    except SyntaxError:
+        try:
+            compiled = compile(code, "<console>", "exec")
+        except SyntaxError:
+            import traceback
+            return json.dumps({"ok": False, "output": "",
+                               "error": traceback.format_exc(limit=0)})
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        try:
+            exec(compiled, _py_console_ns)
+        except BaseException:
+            ok = False
+            err.write(_trim_traceback("<console>"))
+    return json.dumps({"ok": ok, "output": out.getvalue(),
+                       "error": err.getvalue()})

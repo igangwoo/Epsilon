@@ -180,6 +180,23 @@ POST /api/check {path?, content?} -> {
   "deps": Session.dependency_graph()
 }
 
+GET  /api/run/languages        -> {"languages": {"python": bool, "cpp": bool}}
+   (what this machine can actually run; the browser build reports cpp false)
+POST /api/run {language, code, stdin?, timeout?, filename?} -> {
+  "ok", "language", "phase": "run"|"compile", "stdout", "stderr",
+  "exit_code", "duration_ms", "message",
+  "diagnostics": [...]           # compiler/traceback errors, checker-shaped,
+}                                # so the gutter works for all three languages
+   (real execution: a fresh subprocess per run (Pyodide's own interpreter in
+    the browser build), wall-clock timeout, output cap. Cross-origin calls
+    are refused with 403 - a web page must not be able to execute code on
+    the user's machine; the browser build's C++ reply is an honest refusal,
+    never a mock.)
+POST /api/pyrepl {code, reset?} -> {"ok", "output", "error", "reset"?}
+   (the persistent Python console: state survives between calls; server-side
+    it lives in a child process - a runaway input kills and respawns it and
+    the reply says the session was reset. Same-origin only, as /api/run.)
+
 POST /api/eval {code}          -> {"ok", "output": str, "diagnostics": [...]}
    (persistent REPL session; `code` is one or more commands OR a bare
     expression - try commands first, fall back to wrapping in #eval)
@@ -296,6 +313,22 @@ normalize line endings/trailing ws only), graph (export SVG plots), export
 serve (uvicorn launch of epsilon.server.app:app), version.
 Manifest: `epsilon.toml` `[project] name/version/description` +
 `[dependencies]` (paths). `epsilon new NAME` scaffolds project + example.
+
+## Runtime - `epsilon/runtime/`
+
+```python
+run_code(language, code, *, stdin="", timeout=10, filename="") -> RunResult
+#   language "python"|"cpp". Fresh subprocess in a temp dir; python runs -I
+#   (no PYTHONPATH/script-dir injection); cpp compiles with g++/clang++ then
+#   runs. Timeout and 200KB output cap, both reported honestly.
+#   RunResult: ok, language, phase, stdout, stderr, exit_code, duration_ms,
+#              diagnostics (checker-shaped), message; .as_dict()
+available_languages() -> {"python": bool, "cpp": bool}   # the truth only
+# pyrepl.PythonRepl: the console's interpreter in a child process - real
+#   state between requests, real isolation from the server, JSON-lines
+#   protocol on stdout (user output is captured, so it cannot corrupt it),
+#   kill-and-respawn on a runaway input.
+```
 
 ## Proof explorer - `epsilon/suggest.py`
 

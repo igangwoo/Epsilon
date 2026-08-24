@@ -13,7 +13,7 @@ import os
 import shutil
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -262,6 +262,19 @@ class CheckRequest(BaseModel):
     content: Optional[str] = None
 
 
+class RunRequest(BaseModel):
+    language: str
+    code: str
+    stdin: str = ""
+    timeout: float = 10.0
+    filename: str = ""
+
+
+class PyReplRequest(BaseModel):
+    code: str
+    reset: bool = False
+
+
 class EvalRequest(BaseModel):
     code: str
 
@@ -269,6 +282,27 @@ class EvalRequest(BaseModel):
 class ExportRequest(BaseModel):
     path: Optional[str] = None
     format: str = "latex"
+
+
+def _require_same_origin(request: Request) -> None:
+    """Refuse cross-site calls to endpoints that execute code.
+
+    The CORS middleware is deliberately permissive for the read/check API,
+    but /api/run and /api/pyrepl execute real programs with the server's
+    privileges. Without this check, any web page the user visits could POST
+    here and run code on their machine. A browser stamps cross-site requests
+    with an Origin header; one that does not match the host this server is
+    being addressed as is refused before anything runs. Requests without an
+    Origin (curl, scripts) are the user's own and pass.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+    host = request.headers.get("host", "")
+    from urllib.parse import urlsplit
+    if urlsplit(origin).netloc != host:
+        raise HTTPException(status_code=403,
+                            detail="cross-origin code execution is refused")
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +314,8 @@ def create_app() -> FastAPI:
     app.add_middleware(CORSMiddleware, allow_origins=["*"],
                        allow_methods=["*"], allow_headers=["*"])
 
-    repl_state = {"repl": Repl()}
+    from ..runtime.pyrepl import PythonRepl
+    repl_state = {"repl": Repl(), "pyrepl": PythonRepl()}
 
     # -------------------- files --------------------
     @app.get("/api/files")
@@ -425,6 +460,40 @@ def create_app() -> FastAPI:
                     "plots": [], "traces": {}, "deps": {"nodes": [], "edges": []}}
 
     # -------------------- eval (persistent) --------------------
+    # -------------------- running programs --------------------
+    @app.get("/api/run/languages")
+    def run_languages() -> dict:
+        from ..runtime import available_languages
+        return {"languages": available_languages()}
+
+    @app.post("/api/run")
+    def run_program(req: RunRequest, request: Request) -> dict:
+        """Run a Python or C++ program for real, in a fresh subprocess.
+
+        The result is exactly what happened: stdout, stderr, exit code,
+        duration, and compiler/runtime diagnostics in the same shape the
+        Epsilon checker reports, so the editor gutter works for all three
+        languages. Nothing here can mark anything proven.
+        """
+        _require_same_origin(request)
+        from ..runtime import run_code
+        return run_code(req.language, req.code, stdin=req.stdin,
+                        timeout=req.timeout, filename=req.filename).as_dict()
+
+    @app.post("/api/pyrepl")
+    def python_console(req: PyReplRequest, request: Request) -> dict:
+        """One input to the persistent Python console.
+
+        State survives between calls (it is a console); a runaway input
+        resets the session and the reply says so.
+        """
+        _require_same_origin(request)
+        repl = repl_state["pyrepl"]
+        if req.reset:
+            repl.reset()
+            return {"ok": True, "output": "", "error": "", "reset": True}
+        return repl.run(req.code)
+
     @app.post("/api/eval")
     def eval_code(req: EvalRequest) -> dict:
         try:

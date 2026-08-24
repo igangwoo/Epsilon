@@ -362,6 +362,7 @@
     const tab = currentTab();
     if (tab) {
       tab.content = editor.value;
+      if (run.diags && run.diags.path === tab.path) run.diags = null;
       tab.dirty = tab.content !== tab.saved;
       renderTabs();
       renderFileList();
@@ -825,9 +826,9 @@
     // the proof engine only understands Epsilon. Reporting bogus Epsilon
     // errors against a Python file would be worse than reporting nothing.
     if (!isEpsilon()) {
-      errorLines = new Set();
-      renderEditor();
-      renderProblems([]);
+      // a Python/C++ buffer's problems come from its last run, not from
+      // the Epsilon checker — keep them on screen instead of wiping them
+      applyRunDiagnostics();
       setCheckState("na");
       // the theorem list, plots and graph still describe the last Epsilon
       // file checked, which is the useful thing to keep on screen
@@ -874,12 +875,18 @@
       s === "ok" ? "✓ checked" : s === "error" ? "✗ errors" :
       s === "na" ? "not an Epsilon file" : "ready";
     $("#checkBtn").classList.toggle("running", s === "running");
-    // the check button is meaningless outside Epsilon; say so rather than
-    // leaving a live-looking control that does nothing
+    // the header button follows the language: Check for Epsilon, Run for
+    // Python/C++, disabled where neither applies — never a live-looking
+    // control that does nothing
     const epsl = isEpsilon();
-    $("#checkBtn").disabled = !epsl;
-    $("#checkBtn").title = epsl ? "Check (Ctrl/Cmd+Enter)"
+    const runnable = canRun();
+    const btn = $("#checkBtn");
+    btn.disabled = !epsl && !runnable;
+    btn.title = epsl ? "Check (Ctrl/Cmd+Enter)"
+      : runnable ? "Run (Ctrl/Cmd+Enter)"
       : "Checking applies to Epsilon files";
+    const btnLabel = btn.querySelector("span") || btn.appendChild(el("span"));
+    btnLabel.textContent = epsl ? "Check" : runnable ? "Run" : "Check";
     const label = $("#editorLanguage");
     if (label) label.textContent = LANGUAGE_LABEL[currentLanguage()] || "Plain text";
   }
@@ -1716,7 +1723,7 @@
     ["editor", "Editor"], ["proof", "Proof"], ["plot", "Plot"],
     ["inspector", "Inspector"], ["problems", "Problems"],
     ["console", "Console"], ["output", "Output"],
-    ["cas", "CAS"], ["render", "Rendered mathematics"],
+    ["cas", "CAS"], ["render", "Rendered mathematics"], ["run", "Run"],
     ["deps", "Dependency graph"],
   ].map(([id, label]) => ({
     name: "Open: " + label, kind: "view", run: () => openPaneView(id),
@@ -2202,6 +2209,24 @@
     $("#consoleLog").innerHTML = "";
   }
 
+  /* One console, two languages. ε> evaluates Epsilon through the engine;
+     py> is a persistent Python session — real state, held on the backend,
+     surviving between inputs the way a console must. */
+  let consoleMode = readJSON("epsilon.console.lang", "epsilon");
+
+  function setConsoleMode(mode) {
+    consoleMode = mode;
+    writeJSON("epsilon.console.lang", mode);
+    const btn = $("#consoleLang");
+    if (btn) {
+      btn.textContent = mode === "python" ? "py>" : "ε>";
+      btn.classList.toggle("py", mode === "python");
+    }
+    consoleInput.placeholder = mode === "python"
+      ? "Python — a persistent session; Enter to run, Shift+Enter for a new line"
+      : "evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete";
+  }
+
   async function runConsole(code) {
     consoleHistory.push(code);
     saveConsoleHistory();
@@ -2210,13 +2235,21 @@
     const pending = appendConsole("…", "pending");
     let r;
     try {
-      r = await api("POST", "/api/eval", { code });
+      r = consoleMode === "python"
+        ? await api("POST", "/api/pyrepl", { code })
+        : await api("POST", "/api/eval", { code });
     } catch (e) {
       pending.remove();
       appendConsole(String(e), "err");
       return;
     }
     pending.remove();
+    if (consoleMode === "python") {
+      if (r.output) appendConsole(r.output.replace(/\n$/, ""), "");
+      if (r.error) appendConsole(r.error.replace(/\n$/, ""), "err");
+      if (r.reset) appendConsole("— the Python session was reset —", "err");
+      return;
+    }
     if (r.output) appendConsole(r.output, r.ok ? "" : "err");
     (r.diagnostics || []).forEach((d) => appendConsole(d, "err"));
   }
@@ -2335,7 +2368,14 @@
         await runConsole(code);
       } else if (ev.key === "Tab") {
         ev.preventDefault();
-        consoleComplete();
+        if (consoleMode === "python") {
+          const at = consoleInput.selectionStart;
+          consoleInput.value = consoleInput.value.slice(0, at) + "    " +
+            consoleInput.value.slice(consoleInput.selectionEnd);
+          consoleInput.selectionStart = consoleInput.selectionEnd = at + 4;
+        } else {
+          consoleComplete();
+        }
       } else if (ev.key === "ArrowUp" && !consoleInput.value.includes("\n")) {
         if (histIdx > 0) {
           histIdx--;
@@ -2626,6 +2666,106 @@
   }
 
   /* ===================================================================
+   * Running programs
+   *
+   * Python and C++ execute for real — a fresh interpreter or a compiled
+   * binary — and the panel reports exactly what happened: stdout, stderr,
+   * exit code, duration. Compiler and traceback diagnostics land in the
+   * same gutter and Problems panel the Epsilon checker uses. None of this
+   * can mark anything proven; running a program is not a proof.
+   * =================================================================== */
+  const run = { busy: false, languages: null, diags: null };
+
+  const RUNNABLE = new Set(["python", "cpp"]);
+  const canRun = () => RUNNABLE.has(currentLanguage());
+
+  async function runLanguages() {
+    if (!run.languages) {
+      try {
+        run.languages = (await api("GET", "/api/run/languages")).languages || {};
+      } catch (e) { run.languages = { python: true, cpp: false }; }
+    }
+    return run.languages;
+  }
+
+  async function runCurrent() {
+    const tab = currentTab();
+    if (!tab || !canRun() || run.busy) return;
+    const language = currentLanguage();
+    const langs = await runLanguages();
+    EpsilonPanes.openView("run");
+    const out = $("#runOutput");
+    if (langs[language] === false) {
+      out.innerHTML = "";
+      out.appendChild(el("div", "run-block err",
+        language === "cpp"
+          ? "C++ needs a compiler, and this environment has none — run the " +
+            "local server build (epsilon serve) for C++."
+          : `${language} is not runnable here`));
+      setRunStatus("");
+      return;
+    }
+
+    run.busy = true;
+    $("#runBtn").classList.add("running");
+    out.innerHTML = "";
+    out.appendChild(el("div", "run-block dim", "running " + tab.path + " …"));
+    setRunStatus("");
+    let r;
+    try {
+      r = await api("POST", "/api/run", {
+        language,
+        code: tab.content,
+        stdin: $("#runStdinToggle").checked ? $("#runStdin").value : "",
+        filename: tab.path.split("/").pop(),
+      });
+    } finally {
+      run.busy = false;
+      $("#runBtn").classList.remove("running");
+    }
+    renderRunResult(tab, r);
+  }
+
+  function renderRunResult(tab, r) {
+    const out = $("#runOutput");
+    out.innerHTML = "";
+    if (r.message) out.appendChild(el("div", "run-block err", r.message));
+    if (r.stdout) out.appendChild(el("pre", "run-block", r.stdout));
+    if (r.stderr) out.appendChild(el("pre", "run-block err", r.stderr));
+    if (!r.message && !r.stdout && !r.stderr) {
+      out.appendChild(el("div", "run-block dim", "(no output)"));
+    }
+    const bits = [];
+    if (r.phase === "compile") bits.push("failed to compile");
+    else if (r.exit_code != null) bits.push("exit " + r.exit_code);
+    if (r.duration_ms != null) bits.push(r.duration_ms + " ms");
+    bits.push(LANGUAGE_LABEL[r.language] || r.language);
+    setRunStatus(bits.join(" · "), r.ok);
+
+    // compiler / traceback diagnostics land where the checker's do —
+    // remembered per file, because the debounced check pass also repaints
+    // the Problems panel and must not wipe them
+    run.diags = { path: tab.path, diagnostics: r.diagnostics || [] };
+    if (tab.path === state.active) applyRunDiagnostics();
+  }
+
+  function applyRunDiagnostics() {
+    const d = run.diags && run.diags.path === state.active
+      ? run.diags.diagnostics : [];
+    errorLines = new Set(d.filter((x) => x.severity === "error")
+      .map((x) => x.span && x.span[0]).filter(Boolean));
+    renderEditor();
+    renderProblems(d);
+  }
+
+  function setRunStatus(text, ok) {
+    const bar = $("#runStatus");
+    if (!bar) return;
+    bar.textContent = text || "";
+    bar.className = "run-status" + (text ? (ok ? " ok" : " err") : "");
+  }
+
+  /* ===================================================================
    * Pane workspace
    *
    * Every tool is a view in the shared pane system rather than a panel
@@ -2642,6 +2782,9 @@
     { id: "problems",  title: "Problems",   icon: "⚠", element: "#problemsPanel" },
     { id: "console",   title: "Console",    icon: "›", element: "#consolePanel" },
     { id: "output",    title: "Output",     icon: "⎙", element: "#outputPanel" },
+    { id: "run",       title: "Run",        icon: "▶", element: "#runPanel",
+      onShow: () => { const t = $("#runTarget");
+        if (t) t.textContent = state.active || ""; } },
     { id: "render",    title: "Rendered",   icon: "𝛴", element: "#renderPanel",
       onShow: () => refreshRender() },
     { id: "cas",       title: "CAS",        icon: "∫", element: "#casPanel",
@@ -2677,7 +2820,17 @@
    * wiring
    * =================================================================== */
   function wire() {
-    $("#checkBtn").onclick = runCheck;
+    $("#checkBtn").onclick = () => { if (canRun()) runCurrent(); else runCheck(); };
+    $("#runBtn").onclick = runCurrent;
+    $("#consoleLang").onclick = () =>
+      setConsoleMode(consoleMode === "python" ? "epsilon" : "python");
+    setConsoleMode(consoleMode);
+    $("#runClear").onclick = () => {
+      $("#runOutput").innerHTML = "";
+      setRunStatus("");
+    };
+    $("#runStdinToggle").onchange = (e) =>
+      $("#runStdin").classList.toggle("hidden", !e.target.checked);
     $("#themeBtn").onclick = toggleTheme;
     $("#newFileBtn").onclick = () => newFile();
     $("#newFolderBtn").onclick = () => newFolder();
@@ -2728,7 +2881,10 @@
 
     document.addEventListener("keydown", (e) => {
       const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (mod && e.key === "Enter") { e.preventDefault(); runCheck(); }
+      if (mod && e.key === "Enter") {
+        e.preventDefault();
+        if (canRun()) runCurrent(); else runCheck();
+      }
       else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveCurrent(); }
       else if (mod && e.shiftKey && e.key.toLowerCase() === "p") { e.preventDefault(); openPalette("cmd"); }
       else if (mod && e.key.toLowerCase() === "p") { e.preventDefault(); openPalette("file"); }

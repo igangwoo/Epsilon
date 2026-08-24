@@ -29,7 +29,7 @@
       <div class="title-right">
         <button class="btn" id="checkBtn" title="Check (Ctrl/Cmd+Enter)">
           <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 3l9 5-9 5z" fill="currentColor"/></svg>
-          Check
+          <span>Check</span>
         </button>
         <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">
           <svg viewBox="0 0 16 16" width="16" height="16"><path d="M6.2 1.4a6.6 6.6 0 108.4 8.4A7.2 7.2 0 016.2 1.4z" fill="currentColor"/></svg>
@@ -171,7 +171,8 @@
     <div class="view-console" id="consolePanel">
       <div class="console-log" id="consoleLog"></div>
       <div class="console-input-row">
-        <span class="console-prompt">ε&gt;</span>
+        <button class="console-lang" id="consoleLang"
+          title="Switch console language (Epsilon / Python)">ε&gt;</button>
         <textarea class="console-input" id="consoleInput" rows="1"
           spellcheck="false" autocomplete="off"
           placeholder="evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete"></textarea>
@@ -191,6 +192,27 @@
       <div class="render-body" id="renderBody">
         <div class="empty-hint">Check an Epsilon file to see it typeset.</div>
       </div>
+    </div>
+    <div class="view-run" id="runPanel">
+      <div class="run-bar">
+        <button class="btn" id="runBtn">
+          <svg viewBox="0 0 16 16" width="13" height="13"><path d="M4 3l9 5-9 5z" fill="currentColor"/></svg>
+          <span id="runBtnLabel">Run</span>
+        </button>
+        <span class="run-target" id="runTarget"></span>
+        <span class="render-spacer"></span>
+        <label class="render-toggle"><input type="checkbox" id="runStdinToggle" />
+          stdin</label>
+        <button class="chip-btn" id="runClear">Clear</button>
+      </div>
+      <textarea class="run-stdin hidden" id="runStdin" spellcheck="false"
+        placeholder="what the program reads from standard input"></textarea>
+      <div class="run-output" id="runOutput">
+        <div class="empty-hint">Open a Python or C++ file and press Run.
+          Programs execute for real — output, exit code and duration are
+          reported exactly as they happened.</div>
+      </div>
+      <div class="run-status" id="runStatus"></div>
     </div>
     <div class="view-cas" id="casPanel">
       <div class="cas-bar">
