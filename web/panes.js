@@ -307,6 +307,11 @@
     const bar = document.createElement("div");
     bar.className = "pane-tabs";
 
+    // the tabs scroll; the pane's own controls stay put, so a narrow pane
+    // never hides the split and maximise buttons behind its tab list
+    const strip = document.createElement("div");
+    strip.className = "pane-tabs-strip";
+
     node.tabs.forEach((viewId) => {
       const v = views.get(viewId);
       if (!v) return;
@@ -339,12 +344,13 @@
         e.dataTransfer.setData("text/epsilon-view", viewId);
         e.dataTransfer.effectAllowed = "move";
       });
-      bar.appendChild(tab);
+      strip.appendChild(tab);
     });
 
     const spacer = document.createElement("div");
     spacer.className = "pane-tabs-spacer";
-    bar.appendChild(spacer);
+    strip.appendChild(spacer);
+    bar.appendChild(strip);
 
     bar.appendChild(paneButton("◫", "Split right", () => splitPane("row", node.active)));
     bar.appendChild(paneButton("⊟", "Split down", () => splitPane("col", node.active)));
