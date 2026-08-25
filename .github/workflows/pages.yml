@@ -43,6 +43,8 @@ jobs:
           test -f web/boot.js
           test -f web/bridge.py
           test -f web/app.js
+          test -f web/core.js     # registries: commands, keys, settings
+          test -f web/editor.js   # the code editor
           test -f web/panes.js
           test -f web/app.css
           test -f web/web.css   # web-only overrides (not copied from server)
