@@ -1,9 +1,16 @@
 # Epsilon (엡실론)
 
-> **지금 배포되는 Epsilon은 브라우저에서 도는 가벼운 Python 작업대입니다.**
-> Pyodide 하나만 씁니다 — 서버도, wheel도, 브리지도 없이 네 개 파일
-> 140KB 아래. 코드를 쓰고, 실행하고, 오류가 난 줄로 바로 가는 것까지가
-> 전부이고, 그 작음이 곧 기능입니다.
+> **지금 배포되는 Epsilon은 브라우저에서 도는 아주 가벼운 코드 편집기입니다.**
+> 파일 트리도, 탭도, 패널도 없습니다 — 코드를 쓰는 곳, 입력, 출력. 그게
+> 전부이고, 네 개 파일 140KB 아래입니다.
+>
+> **Python · C++ · Java** 세 언어를 편집합니다. 문법 강조, 들여쓰기, 주석
+> 토글, 괄호 짝, 자동완성이 언어마다 따로 붙어 있습니다. 다만 *실행*은
+> 정직하게 갈립니다: Python은 Pyodide로 이 탭 안에서 실제로 돌아가고,
+> C++과 Java는 컴파일러가 필요한데 브라우저에는 없습니다. 그래서 배포된
+> 페이지에서는 무엇이 없는지 말하고 실행을 거절합니다 — 흉내내지 않습니다.
+> 같은 페이지를 `epsilon serve`로 띄우면 `/lite` 에서 g++·javac 를 진짜로
+> 불러 세 언어 모두 실행됩니다.
 >
 > 메뉴 바·커맨드 팔레트·터미널·디버거·소스 컨트롤·의존성 그래프를 갖춘
 > 전체 워크벤치는 `epsilon/server/static/`에 그대로 있고 `epsilon serve`로
@@ -52,12 +59,15 @@ Epsilon 은 **수치적으로 확인한 것과 형식적으로 증명한 것을 
 
 ## Try it in your browser — no install, no server
 
-The `web/` folder is a **static site**: Fork the repo, enable GitHub Pages
-(or import to Vercel), and you have a live Epsilon IDE at your own URL.
-The whole engine — kernel, elaborator, tactics, CAS, exporters — runs
-inside the visitor's browser via Pyodide. See
-[web/DEPLOY.md](web/DEPLOY.md) for the click-only steps (works from a
-managed Chromebook where you cannot install Python).
+The `web/` folder is a **static site**: fork the repo, enable GitHub Pages,
+and you have a live editor at your own URL. Four files, no build step.
+
+It edits **Python, C++ and Java**, and it is honest about which of them it
+can run. Python runs in the tab, on Pyodide. C++ and Java need a compiler,
+which a browser does not have, so there Run is disabled and the page names
+the missing tool instead of faking a result. Run `epsilon serve` on your own
+machine and open `/lite` and the same page compiles and runs all three for
+real, because then there is a `g++` and a `javac` behind it.
 
 ## Quickstart (local, with Python)
 

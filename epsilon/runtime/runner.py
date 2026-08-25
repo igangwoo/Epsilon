@@ -1,4 +1,4 @@
-"""Execute a Python or C++ program and report honestly what happened.
+"""Execute a Python, C++ or Java program and report honestly what happened.
 
 One entry point, `run_code`, used by the server's /api/run. Programs run in
 a fresh subprocess inside a temporary directory, with a wall-clock timeout
@@ -60,9 +60,17 @@ def _cxx() -> str | None:
     return None
 
 
+def _jdk() -> tuple[str, str] | None:
+    """`(javac, java)` if both are here — a compiler without a runtime, or
+    the other way round, cannot run anything."""
+    javac, java = shutil.which("javac"), shutil.which("java")
+    return (javac, java) if javac and java else None
+
+
 def available_languages() -> dict[str, bool]:
     """What this machine can actually run. The UI shows only the truth."""
-    return {"python": True, "cpp": _cxx() is not None}
+    return {"python": True, "cpp": _cxx() is not None,
+            "java": _jdk() is not None}
 
 
 def _cap(data: bytes) -> str:
@@ -113,6 +121,28 @@ def gcc_diagnostics(stderr: str, filename: str) -> list[dict]:
         out.append({"severity": "error" if sev == "error" else "warning",
                     "message": m.group("msg").strip(),
                     "span": [ln, col, ln, col], "module": filename})
+    return out
+
+
+_JAVAC_LINE = re.compile(
+    r"^(?P<file>[^:]+\.java):(?P<line>\d+):\s*(?P<sev>error|warning):\s*(?P<msg>.*)$")
+
+
+def javac_diagnostics(stderr: str, filename: str) -> list[dict]:
+    """javac diagnostics for `filename`, as checker-shaped entries.
+
+    javac reports a line but no column; it marks the column with a caret on
+    the following line, which is more than the gutter needs.
+    """
+    out = []
+    for line in stderr.splitlines():
+        m = _JAVAC_LINE.match(line.strip())
+        if not m or os.path.basename(m.group("file")) != os.path.basename(filename):
+            continue
+        ln = int(m.group("line"))
+        out.append({"severity": "error" if m.group("sev") == "error" else "warning",
+                    "message": m.group("msg").strip(),
+                    "span": [ln, 1, ln, 1], "module": filename})
     return out
 
 
@@ -196,6 +226,71 @@ def _run_cpp(code: str, stdin: str, timeout: float, filename: str) -> RunResult:
             diagnostics=warnings)
 
 
+#: Java insists the file be named after its public class, so the name is
+#: taken from the source rather than from whatever the editor called it
+_JAVA_CLASS = re.compile(r"public\s+(?:final\s+|abstract\s+)?class\s+([A-Za-z_]\w*)")
+
+
+#: The JVM announces its own environment on stderr before the program
+#: starts. That line is the JVM talking about itself, never the user's
+#: output, and leaving it in makes every Java run look like it printed
+#: something it did not.
+_JVM_NOISE = re.compile(r"^Picked up (?:_?JAVA_(?:TOOL_)?OPTIONS|JDK_JAVA_OPTIONS):.*$\n?",
+                        re.M)
+
+
+def _quiet_jvm(stderr: str) -> str:
+    return _JVM_NOISE.sub("", stderr)
+
+
+def _run_java(code: str, stdin: str, timeout: float, filename: str) -> RunResult:
+    jdk = _jdk()
+    if jdk is None:
+        return RunResult(
+            False, "java", "compile",
+            message="no JDK on this machine (looked for javac and java) — "
+                    "the IDE reports that rather than pretending")
+    javac, java = jdk
+    m = _JAVA_CLASS.search(code)
+    if not m:
+        # javac would say this too, but much later and less clearly
+        return RunResult(
+            False, "java", "compile",
+            message="no public class found — Java runs `main` from a public "
+                    "class, so the file needs one")
+    name = m.group(1)
+    base = name + ".java"
+    with tempfile.TemporaryDirectory(prefix="epsilon-run-") as tmp:
+        with open(os.path.join(tmp, base), "w", encoding="utf-8") as fh:
+            fh.write(code)
+
+        proc, cms = _exec([javac, "-nowarn", base], cwd=tmp, stdin="",
+                          timeout=timeout)
+        if proc is None:
+            return RunResult(False, "java", "compile", duration_ms=cms,
+                             message=f"compilation stopped after {timeout:g}s")
+        if proc.returncode != 0:
+            stderr = _quiet_jvm(_cap(proc.stderr))
+            return RunResult(False, "java", "compile",
+                             stderr=stderr, exit_code=proc.returncode,
+                             duration_ms=cms,
+                             diagnostics=javac_diagnostics(stderr, base))
+        warnings = javac_diagnostics(_quiet_jvm(_cap(proc.stderr)), base)
+
+        rproc, rms = _exec([java, "-XX:+UseSerialGC", "-Xshare:auto", name],
+                           cwd=tmp, stdin=stdin, timeout=timeout)
+        if rproc is None:
+            return RunResult(False, "java", "run", duration_ms=cms + rms,
+                             diagnostics=warnings,
+                             message=f"stopped after {timeout:g}s — "
+                                     "the program did not finish in time")
+        return RunResult(
+            rproc.returncode == 0, "java", "run",
+            stdout=_cap(rproc.stdout), stderr=_quiet_jvm(_cap(rproc.stderr)),
+            exit_code=rproc.returncode, duration_ms=cms + rms,
+            diagnostics=warnings)
+
+
 def run_code(language: str, code: str, *, stdin: str = "",
              timeout: float = DEFAULT_TIMEOUT,
              filename: str = "") -> RunResult:
@@ -205,6 +300,8 @@ def run_code(language: str, code: str, *, stdin: str = "",
         return _run_python(code, stdin, timeout, filename or "main.py")
     if language == "cpp":
         return _run_cpp(code, stdin, timeout, filename or "main.cpp")
+    if language == "java":
+        return _run_java(code, stdin, timeout, filename or "Main.java")
     return RunResult(False, language, "run",
                      message=f"'{language}' is not a runnable language here "
-                             "(python and cpp are)")
+                             "(python, cpp and java are)")

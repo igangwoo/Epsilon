@@ -180,8 +180,13 @@ POST /api/check {path?, content?} -> {
   "deps": Session.dependency_graph()
 }
 
-GET  /api/run/languages        -> {"languages": {"python": bool, "cpp": bool}}
-   (what this machine can actually run; the browser build reports cpp false)
+GET  /api/run/languages -> {"languages": {"python": bool, "cpp": bool,
+                                          "java": bool}}
+   (what this machine can actually run: python always, cpp if g++ or clang++
+    is on PATH, java if both javac and java are. The deployed browser build
+    calls this same path against its own origin to find out whether it has a
+    compiler behind it at all - on GitHub Pages it 404s, and the page says so
+    rather than pretending.)
 POST /api/run {language, code, stdin?, timeout?, filename?} -> {
   "ok", "language", "phase": "run"|"compile", "stdout", "stderr",
   "exit_code", "duration_ms", "message",
@@ -190,8 +195,8 @@ POST /api/run {language, code, stdin?, timeout?, filename?} -> {
    (real execution: a fresh subprocess per run (Pyodide's own interpreter in
     the browser build), wall-clock timeout, output cap. Cross-origin calls
     are refused with 403 - a web page must not be able to execute code on
-    the user's machine; the browser build's C++ reply is an honest refusal,
-    never a mock.)
+    the user's machine. Served over Pages there is no server to call, and
+    the page refuses in words rather than mocking a result.)
 POST /api/pyrepl {code, reset?} -> {"ok", "output", "error", "reset"?}
    (the persistent Python console: state survives between calls; server-side
     it lives in a child process - a runaway input kills and respawns it and
@@ -393,14 +398,14 @@ file, layout, sidebar, panel, and settings all survive a reload.
 
 ## Browser build - `web/`
 
-The deployed page is a light Python workbench: **Pyodide and nothing
-else**. Four authored files, under 140 KB in total, no build step, no
-wheel, no bridge, no engine.
+The deployed page is one editor and nothing around it: no file tree, no
+tabs, no panels. Four authored files, under 140 KB in total, no build
+step, no wheel, no bridge, no engine.
 
     index.html    the page
     epsilon.css   ink on paper, light and dark
-    editor.js     the editor component
-    app.js        files, the runtime, run, output
+    editor.js     the editor component and the three language tables
+    app.js        the buffers, what can run, run, output
 
 `python3 scripts/build_web.py` does one job: stamp `?v=<hash>` onto each
 asset URL, where the hash is taken over the asset contents. index.html
@@ -409,20 +414,45 @@ could otherwise hold yesterday's HTML with today's JavaScript; changing
 a byte changes every URL, which makes that pairing impossible. The
 deploy workflow re-runs it and fails if the committed site differs.
 
+### Three languages, and only one of them runs in a browser
+
+Python, C++ and Java are all fully edited — highlighting, indentation,
+comment toggling, bracket pairing and completion each follow the
+language, from one table per language in `editor.js`. What can *run* is
+decided at boot and never assumed:
+
+* **Python** runs in the tab, on Pyodide. Nothing else is involved.
+* **C++ and Java** need a compiler, and a browser has none. At boot the
+  page makes one same-origin `GET /api/run/languages`. On GitHub Pages
+  that 404s and the page learns it has no compiler; Run is then disabled
+  and the output area says which tool is missing and that `epsilon serve`
+  on the reader's own machine will compile and run the file for real.
+  Served *by* that server — `epsilon serve` mounts this same build at
+  `/lite` — the probe answers, and Run posts to `/api/run`, which really
+  invokes `g++` and `javac`. Compiler diagnostics come back in the
+  checker's shape, so the gutter marks the failing line in all three
+  languages.
+
+The refusal is on the page, not only in a tooltip: a greyed-out button
+whose reason is hidden is the same as no reason at all.
+
 Two limits are stated in the product rather than hidden:
 
 * Python runs on the page's only thread. A long loop freezes the tab, so
   the UI paints "running" and yields a frame before handing over — the
   pause is the same length either way, but it is legible instead of
   looking like a hang.
-* Files live in this browser's localStorage. Nothing is synced, and
-  clearing site data removes them.
+* Each language's buffer lives in this browser's localStorage. Nothing
+  is synced, and clearing site data removes it.
 
-**Nothing on the typing path may enter Python.** Completion comes from
-the buffer's own words and the language's keywords, computed in
-JavaScript. This is not an optimisation, it is the reason the build
-exists: the previous deploy asked a language service per keystroke and
-measured 527ms on the worst key.
+**Nothing on the typing path may enter Python or the network.**
+Completion comes from the buffer's own words and the language's own word
+lists, computed in JavaScript. This is not an optimisation, it is the
+reason the build exists: an earlier deploy asked a language service per
+keystroke and measured 527 ms on the worst key. Measured on this build,
+in a 1200-line file with completion on: **16.6 ms median, 18.9 ms worst**
+— one frame — and `#include <iostream>`, the line that used to lock the
+page, types at 16.7 ms median.
 
 The editor carries three techniques worth keeping:
 
@@ -441,8 +471,7 @@ The editor carries three techniques worth keeping:
 
 A rendering layer, never an edit. The file still holds `>=`, and every
 keystroke, selection and column number is computed from that text; only
-what the eye is shown changes. A toggle in the header turns the whole
-layer off, and the choice is remembered.
+what the eye is shown changes.
 
 The rule that shapes the whole feature is **width**. The textarea
 underneath owns hit testing and selection, and it lays every character
@@ -451,23 +480,25 @@ cells as the source it stands for. Each one is drawn in a fixed `Nch`
 box, and a browser test measures the painted line against the grid it
 must sit on.
 
-    operators   >=  <=  ==  !=  ->  <-  =>  <->  :=  <<  >>  //  ...
-                → ≥ ≤ ≡ ≠ → ← ⇒ ↔ ≔ ≪ ≫ ⫽ …
-    spaced      a * b   a / b   a - b        → × ÷ −   (one cell in, one out)
-    exponents   x**2  y**-10                 → x²  y⁻¹⁰
-    fractions   3/4  1/2  7/3                → ¾  ½  ⁷⁄₃
-    words       pi tau inf not and or in     → π τ ∞ ¬ ∧ ∨ ∈
+The set is five, and that is the whole set:
 
-Two things are deliberately absent. Long words — `lambda`, `alpha`,
-`sqrt` — would leave four or five empty cells trailing a single glyph,
-and a hole in the middle of a line is worse than the word. And strings
-and comments are never touched: their contents are data, and drawing
-`>=` inside a string as `≥` would misreport what the program holds.
+    >=  ≥      <=  ≤      !=  ≠      ==  ≡      ->  →
+
+Each means the same thing in all three languages and none of them is
+ambiguous. What is deliberately *not* drawn matters as much: `<-` is a
+comparison against a negative number, `//` is a comment in two of the
+three languages, `<<` is how C++ prints, and `1/2` in source is a
+division and not a half. A glyph for any of those would be a claim about
+the program that the program does not make. A ligature is also refused
+when an operator character sits on either side of it, so `>>=`, `<=>`
+and `!==` stay text. Strings and comments are never touched: their
+contents are data.
 
 `tests/test_lite_web.py` covers both halves: static checks on the four
 files, then the real site in a headless browser with CPython standing in
-for Pyodide — boot, run, an error that names its line, reload, and a
-typing-latency budget.
+for Pyodide — boot, run, an error that names its line, per-language
+buffers surviving a reload, the honest C++ refusal, completion, and a
+typing-latency budget for both Python and C++.
 
 ## The full workbench (not deployed)
 

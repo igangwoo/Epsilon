@@ -24,6 +24,11 @@ from ..project import Session, STATUS_LABELS
 from ..repl import Repl
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+#: the light browser build, which is also what GitHub Pages serves.
+#: Served here too so the same page can reach a real compiler.
+LITE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), "web")
 WELCOME = """# Welcome to Epsilon.
 # A programming IDE in your browser - Python and C++, for real.
 #
@@ -975,6 +980,13 @@ def create_app() -> FastAPI:
                 "brand": BRAND}
 
     # -------------------- static IDE --------------------
+    # The light build is the same site GitHub Pages serves, where C++ and
+    # Java can only be edited. Mounted here it is same-origin with
+    # /api/run, so on this machine those two languages really compile.
+    if os.path.isdir(LITE_DIR):
+        app.mount("/lite", StaticFiles(directory=LITE_DIR, html=True),
+                  name="lite")
+
     if os.path.isdir(STATIC_DIR):
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
     else:

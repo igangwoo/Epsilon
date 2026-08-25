@@ -5,65 +5,51 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Epsilon</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%233d6e70'/%3E%3Ctext x='16' y='23' font-size='20' font-family='Georgia,serif' fill='white' text-anchor='middle'%3E%CE%B5%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="epsilon.css?v=9dd534d0accc" />
+  <link rel="stylesheet" href="epsilon.css?v=e52bf9239760" />
 </head>
 <body>
 
-<header id="bar">
-  <span id="brand"><i aria-hidden="true">ε</i><b>epsilon</b></span>
-  <nav id="files" aria-label="Files"></nav>
-  <button id="newFile" class="ui ghost" title="New file">new</button>
-  <span class="grow"></span>
-  <button id="lig" class="ui ghost" aria-pressed="true"
-          title="Show >= as ≥, a/b as a fraction, x**2 as x², and so on. The
-file never changes.">ligatures</button>
-  <button id="theme" class="ui ghost" aria-label="Toggle colour theme">dark</button>
-</header>
+<nav id="langs" class="ui" aria-label="Language"></nav>
+<button id="theme" class="ui" aria-label="Toggle colour theme">dark</button>
 
-<main id="sheet">
+<main>
   <div id="stage">
     <div id="gutter" aria-hidden="true"></div>
     <div id="page">
       <pre id="paint" aria-hidden="true"><code></code></pre>
       <textarea id="code" spellcheck="false" autocomplete="off"
                 autocapitalize="off" autocorrect="off" wrap="off"
-                aria-label="Python source"></textarea>
+                aria-label="Source code"></textarea>
       <div id="caret" aria-hidden="true"><i id="caretBar"></i></div>
       <div id="hints" role="listbox" aria-label="Completions" hidden></div>
     </div>
   </div>
 
-  <div id="rule"><div id="bar-progress"></div></div>
+  <div id="rule"><div id="sweep"></div></div>
 
   <div id="foot">
-    <div id="controls">
-      <button id="run" class="ui">run<span class="key">⌘↵</span></button>
-      <button id="stdinToggle" class="ui ghost" title="Provide standard input">stdin</button>
-    </div>
-    <div id="meta" class="ui">
-      <span id="mPos">Ln 1, Col 1</span>
-      <span id="mState">ready</span>
-    </div>
+    <button id="run" class="ui">run<span class="key">⌘↵</span></button>
+    <button id="stdinBtn" class="ui quiet">stdin</button>
+    <span class="grow"></span>
+    <span id="pos" class="ui quiet">1:1</span>
+    <span id="state" class="ui quiet">ready</span>
   </div>
 
-  <div id="stdinRow" hidden>
-    <label class="ui" for="stdin">stdin</label>
+  <div id="stdinWrap" hidden>
     <textarea id="stdin" rows="2" spellcheck="false"
-              placeholder="lines fed to input()"></textarea>
+              placeholder="input fed to the program"></textarea>
   </div>
 
   <section id="out" aria-live="polite"></section>
 </main>
 
 <div id="boot">
-  <div class="logo">ε</div>
-  <div class="title">Epsilon</div>
+  <div class="mark">ε</div>
   <div class="track"><div id="bootBar"></div></div>
-  <div id="bootMsg" class="ui">Starting…</div>
-  <div id="bootHint" class="ui dim"></div>
+  <div id="bootMsg" class="ui quiet">starting</div>
 </div>
 
-<script src="editor.js?v=9dd534d0accc"></script>
-<script src="app.js?v=9dd534d0accc"></script>
+<script src="editor.js?v=e52bf9239760"></script>
+<script src="app.js?v=e52bf9239760"></script>
 </body>
 </html>

@@ -401,6 +401,17 @@ def test_run_languages_listed(client):
     langs = client.get("/api/run/languages").json()["languages"]
     assert langs["python"] is True
     assert "cpp" in langs
+    assert "java" in langs
+
+
+def test_the_light_build_is_served_here_too(client):
+    """The deployed page and this one are the same four files. Mounted
+    same-origin with /api/run, C++ and Java stop being read-only — which
+    is the only way this project offers them a runtime at all."""
+    r = client.get("/lite/index.html")
+    assert r.status_code == 200
+    assert 'id="langs"' in r.text
+    assert "editor.js" in r.text
 
 
 def test_pyrepl_state_persists_across_requests(client):

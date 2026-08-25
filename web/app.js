@@ -1,26 +1,33 @@
 /* ===================================================================
- * Epsilon — a Python workbench that runs in the browser.
+ * Epsilon — three languages, one page.
  *
- * Pyodide and nothing else. No wheel, no bridge, no server: the page
- * loads a Python, hands it your file, and shows what came back. That is
- * the whole product surface, and keeping it that small is what makes it
- * start in seconds and stay out of the way.
+ * There is one buffer per language, a Run, and somewhere for the
+ * program's input and output to go. That is the whole surface.
  *
- * Two honest limits, stated rather than hidden:
- *   · Python runs on the page's only thread, so a long loop freezes the
+ * What actually runs, and where, is decided honestly at boot:
+ *
+ *   · Python runs here, in this tab, on Pyodide. No server involved.
+ *   · C++ and Java need a compiler, and a browser has none. If this
+ *     page is being served by `epsilon serve` the Run button posts to
+ *     that server, which really does invoke g++ / javac. On GitHub
+ *     Pages there is no such server, so Run says exactly that instead
+ *     of pretending — the editor still gives you the full language.
+ *
+ * Two limits worth stating rather than hiding:
+ *   · Python holds the page's only thread, so a long loop freezes the
  *     tab. The UI paints "running" before handing over, so the pause is
  *     legible instead of looking like a hang.
- *   · Files live in this browser's localStorage. They are not synced
- *     anywhere and clearing site data removes them.
+ *   · Your code lives in this browser's localStorage. It is not synced
+ *     anywhere, and clearing site data removes it.
  * =================================================================== */
 (function () {
   "use strict";
 
   const PYODIDE = "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/";
-  const KEY_FILES = "epsilon.lite.files.v1";
-  const KEY_OPEN = "epsilon.lite.open.v1";
-  const KEY_THEME = "epsilon.lite.theme.v1";
-  const KEY_LIG = "epsilon.lite.ligatures.v1";
+  const KEY_SRC = "epsilon.min.src.v1";
+  const KEY_LANG = "epsilon.min.lang.v1";
+  const KEY_THEME = "epsilon.min.theme.v1";
+  const KEY_STDIN = "epsilon.min.stdin.v1";
 
   const $ = (id) => document.getElementById(id);
   const el = (tag, cls, text) => {
@@ -30,11 +37,12 @@
     return n;
   };
 
-  const WELCOME = `"""Epsilon — Python, in your browser.
+  const ORDER = ["python", "cpp", "java"];
+  const SPEC = EpsilonEditor.LANGS;
 
-Press Run (or Ctrl/Cmd + Enter). Everything below runs here; there is
-no server, and your files stay in this browser.
-"""
+  const STARTER = {
+    python: `# Python runs right here in this tab.
+# Press Run, or Cmd/Ctrl + Enter.
 
 import math
 
@@ -47,14 +55,50 @@ def sinc(x):
 for i in range(8):
     x = i * 0.5
     print(f"sinc({x:3.1f})  " + "#" * round(38 * abs(sinc(x))))
-`;
+`,
+    cpp: `// C++ needs a compiler, which a browser does not have.
+// Run `+"`epsilon serve`"+` and open the page it prints, and this
+// really compiles with g++. Here, it is an editor.
 
-  /* ---- storage: a plain {path: text} map ------------------------- */
+#include <iostream>
+#include <vector>
+
+int main() {
+    std::vector<int> xs{1, 2, 3, 4, 5};
+    long long total = 0;
+    for (int x : xs) {
+        total += 1LL * x * x;
+    }
+    std::cout << "sum of squares: " << total << std::endl;
+    return 0;
+}
+`,
+    java: `// Java needs a JDK, which a browser does not have.
+// Run `+"`epsilon serve`"+` and open the page it prints, and this
+// really compiles with javac. Here, it is an editor.
+
+public class Main {
+    static long squared(long n) {
+        return n * n;
+    }
+
+    public static void main(String[] args) {
+        long total = 0;
+        for (int i = 1; i <= 5; i++) {
+            total += squared(i);
+        }
+        System.out.println("sum of squares: " + total);
+    }
+}
+`,
+  };
+
+  /* ---- storage --------------------------------------------------- */
 
   const read = (key, fallback) => {
     try {
       const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : fallback;
+      return raw === null ? fallback : JSON.parse(raw);
     } catch (e) { return fallback; }
   };
   const write = (key, value) => {
@@ -62,10 +106,13 @@ for i in range(8):
     catch (e) { /* private mode: this session only */ }
   };
 
-  let files = read(KEY_FILES, null);
-  if (!files || !Object.keys(files).length) files = { "main.py": WELCOME };
-  let open = read(KEY_OPEN, null);
-  if (!open || !(open in files)) open = Object.keys(files)[0];
+  const stored = read(KEY_SRC, null) || {};
+  const source = {};
+  ORDER.forEach((id) => {
+    source[id] = typeof stored[id] === "string" ? stored[id] : STARTER[id];
+  });
+  let lang = read(KEY_LANG, null);
+  if (ORDER.indexOf(lang) === -1) lang = "python";
 
   /* ---- theme: follow the system until told otherwise ------------- */
 
@@ -78,7 +125,7 @@ for i in range(8):
   function applyTheme() {
     if (choice) document.documentElement.setAttribute("data-theme", choice);
     else document.documentElement.removeAttribute("data-theme");
-    $("theme").textContent = isDark() ? "light" : "dark";  // offers the other
+    $("theme").textContent = isDark() ? "light" : "dark";   // offers the other
     if (editor) editor.refresh();
   }
   $("theme").addEventListener("click", () => {
@@ -90,129 +137,77 @@ for i in range(8):
     systemDark.addEventListener("change", applyTheme);
   }
 
-  /* ---- ligatures: a rendering choice, remembered ------------------ */
-
-  let ligatures = read(KEY_LIG, true);
-
-  function drawLigButton() {
-    const b = $("lig");
-    b.setAttribute("aria-pressed", String(ligatures));
-    b.style.color = ligatures ? "var(--accent)" : "";
-  }
-
-  $("lig").addEventListener("click", () => {
-    ligatures = !ligatures;
-    write(KEY_LIG, ligatures);
-    drawLigButton();
-    editor.repaint();
-    editor.focus();
-  });
-
   /* ---- editor ---------------------------------------------------- */
 
-  let editor = null;
-  let dirty = false;
-
-  editor = EpsilonEditor.Editor({
+  let saveTimer = 0;
+  const editor = EpsilonEditor.Editor({
     textarea: $("code"),
     paint: $("paint"),
     gutter: $("gutter"),
     caret: $("caret"),
     hints: $("hints"),
-    ligatures: () => ligatures,
+    language: lang,
     onChange() {
-      files[open] = editor.value;
-      if (!dirty) { dirty = true; drawTabs(); }
+      source[lang] = editor.value;
       clearTimeout(saveTimer);
       saveTimer = setTimeout(save, 400);
     },
-    onCursor(p) {
-      $("mPos").textContent = "Ln " + p.line + ", Col " + p.col;
-    },
+    onCursor(p) { $("pos").textContent = p.line + ":" + p.col; },
     onGutter(line) { editor.goToLine(line); },
   });
 
-  let saveTimer = 0;
   function save() {
-    files[open] = editor.value;
-    write(KEY_FILES, files);
-    write(KEY_OPEN, open);
-    if (dirty) { dirty = false; drawTabs(); }
+    source[lang] = editor.value;
+    write(KEY_SRC, source);
+    write(KEY_LANG, lang);
+    write(KEY_STDIN, $("stdin").value);
   }
 
-  /* ---- files ----------------------------------------------------- */
+  /* ---- languages -------------------------------------------------- */
 
-  function drawTabs() {
-    const host = $("files");
+  function drawLangs() {
+    const host = $("langs");
     host.innerHTML = "";
-    Object.keys(files).forEach((path) => {
-      const tab = el("button", "tab" + (path === open ? " on" : "") +
-        (path === open && dirty ? " dirty" : ""), path);
-      tab.addEventListener("click", () => openFile(path));
-      tab.addEventListener("auxclick", (ev) => {
-        if (ev.button === 1) { ev.preventDefault(); removeFile(path); }
-      });
-      tab.addEventListener("contextmenu", (ev) => {
-        ev.preventDefault();
-        removeFile(path);
-      });
-      tab.title = path + " — middle-click or right-click to delete";
-      host.appendChild(tab);
+    ORDER.forEach((id) => {
+      const b = el("button", "lang ui" + (id === lang ? " on" : ""),
+                   SPEC[id].label);
+      b.setAttribute("aria-pressed", String(id === lang));
+      b.addEventListener("click", () => choose(id));
+      host.appendChild(b);
     });
   }
 
-  function openFile(path) {
-    if (!(path in files) || path === open) return;
+  function choose(id) {
+    if (id === lang) return editor.focus();
     save();
-    open = path;
-    editor.value = files[path];
-    write(KEY_OPEN, open);
-    drawTabs();
+    lang = id;
+    editor.setLanguage(id);
+    editor.value = source[id];
+    editor.markBad(0);
+    write(KEY_LANG, lang);
+    drawLangs();
+    drawRun();
+    clearOut();
+    explain();
     editor.focus();
   }
-
-  function removeFile(path) {
-    if (Object.keys(files).length === 1) {
-      return say("That is the only file — Epsilon keeps at least one.", "note");
-    }
-    if (!confirm("Delete " + path + "? This browser has the only copy.")) return;
-    delete files[path];
-    if (open === path) open = Object.keys(files)[0];
-    editor.value = files[open];
-    save();
-    drawTabs();
-  }
-
-  $("newFile").addEventListener("click", () => {
-    let name = prompt("New file", "untitled.py");
-    if (!name) return;
-    name = name.trim();
-    if (!name.endsWith(".py")) name += ".py";
-    if (name in files) return openFile(name);
-    files[name] = "";
-    open = name;
-    editor.value = "";
-    save();
-    drawTabs();
-    editor.focus();
-  });
 
   /* ---- output ---------------------------------------------------- */
 
   function clearOut() { $("out").innerHTML = ""; }
 
   function say(text, cls) {
-    if (text === "") return;
+    if (text === "") return null;
     const line = el("div", "line " + (cls || ""), text);
     $("out").appendChild(line);
     $("out").scrollTop = $("out").scrollHeight;
     return line;
   }
 
-  /** A traceback, with the line that failed made clickable. */
+  /** An error, with the line that failed made clickable. */
   function sayError(text, line) {
     const box = el("div", "line bad");
-    box.textContent = text.replace(/\n+$/, "");
+    box.textContent = String(text).replace(/\n+$/, "");
     $("out").appendChild(box);
     if (line) {
       const jump = el("div", "line");
@@ -226,12 +221,73 @@ for i in range(8):
   }
 
   function state(text, cls) {
-    const node = $("mState");
-    node.textContent = text;
-    node.className = cls || "";
+    $("state").textContent = text;
+    $("state").className = "ui quiet " + (cls || "");
   }
 
-  /* ---- the runtime ----------------------------------------------- */
+  const took = (ms) =>
+    ms >= 1000 ? (ms / 1000).toFixed(2) + " s" : Math.round(ms) + " ms";
+
+  /* ---- what can actually run -------------------------------------- */
+
+  // python is answered by Pyodide in this tab; cpp and java are only
+  // answered by a real compiler, which means a real server
+  const can = { python: false, cpp: false, java: false };
+  let server = false;
+
+  /**
+   * Is this page being served by `epsilon serve`?
+   *
+   * A plain same-origin GET. On GitHub Pages it 404s and we learn the
+   * truth; on the local server it comes back with the languages that
+   * machine can build. Nothing is assumed either way.
+   */
+  async function probeServer() {
+    try {
+      const res = await fetch("/api/run/languages", { cache: "no-store" });
+      if (!res.ok) return;
+      const body = await res.json();
+      const langs = (body && body.languages) || {};
+      server = true;
+      can.cpp = !!langs.cpp;
+      can.java = !!langs.java;
+    } catch (e) { /* no server: that is the common case, and it is fine */ }
+  }
+
+  function drawRun() {
+    const ok = can[lang];
+    $("run").disabled = !ok;
+    $("run").title = ok ? "" : whyNot(lang);
+  }
+
+  const NAME = { python: "Python", cpp: "C++", java: "Java" };
+
+  function whyNot(id) {
+    if (id === "python") {
+      return "Python could not start, so it cannot run anything here.";
+    }
+    const tool = id === "cpp" ? "a C++ compiler" : "a JDK";
+    if (server) return "This machine has no " + tool + " installed.";
+    return NAME[id] + " needs " + (id === "cpp" ? "a compiler" : "a JDK") +
+      " to run, and a browser has none — so this is an editor for it, not a " +
+      "runtime. Run `epsilon serve` on your own machine and this same page " +
+      "compiles and runs the file for real.";
+  }
+
+  /**
+   * Say out loud what cannot happen and why.
+   *
+   * A greyed-out button with the reason hidden in a tooltip is the same
+   * as no reason at all, and the starter comment disappears the moment
+   * anyone edits the file.
+   */
+  function explain() {
+    if (can[lang]) return state("ready", "");
+    state("no " + (lang === "python" ? "python" : "compiler"), "");
+    say(whyNot(lang), "why");
+  }
+
+  /* ---- Python, in this tab ---------------------------------------- */
 
   let py = null;
   let busy = false;
@@ -275,8 +331,55 @@ def _epsilon_run(src, stdin_text, filename="main.py"):
                        "ms": round((time.perf_counter() - started) * 1000)})
 `;
 
+  function runPythonHere() {
+    try {
+      py.globals.set("_src", editor.value);
+      py.globals.set("_stdin", $("stdin").value || "");
+      py.globals.set("_name", SPEC.python.file);
+      return JSON.parse(py.runPython("_epsilon_run(_src, _stdin, _name)"));
+    } catch (e) {
+      return { status: "error", out: "", err: String(e), line: null, ms: 0 };
+    }
+  }
+
+  /* ---- C++ and Java, on the server that is serving this page ------ */
+
+  async function runOnServer() {
+    const started = performance.now();
+    try {
+      const res = await fetch("/api/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          language: lang, code: editor.value,
+          stdin: $("stdin").value || "", filename: SPEC[lang].file,
+        }),
+      });
+      if (!res.ok) {
+        return { status: "error", out: "", ms: performance.now() - started,
+                 err: "the server refused this run (" + res.status + ")",
+                 line: null };
+      }
+      const r = await res.json();
+      const first = (r.diagnostics || [])[0];
+      return {
+        status: r.ok ? "ok" : "error",
+        out: r.stdout || "",
+        err: r.stderr || r.message || "",
+        line: first && first.span ? first.span[0] : null,
+        ms: r.duration_ms || (performance.now() - started),
+        phase: r.phase,
+      };
+    } catch (e) {
+      return { status: "error", out: "", err: String(e), line: null,
+               ms: performance.now() - started };
+    }
+  }
+
+  /* ---- run --------------------------------------------------------- */
+
   async function run() {
-    if (busy || !py) return;
+    if (busy || !can[lang]) return;
     busy = true;
     save();
     clearOut();
@@ -285,40 +388,38 @@ def _epsilon_run(src, stdin_text, filename="main.py"):
     $("rule").classList.add("busy");
     state("running", "busy");
 
-    // paint the "running" state before handing the thread to Python:
-    // the pause is the same length either way, but this way it is
-    // legible rather than looking like the page died
+    // paint the "running" state before handing the thread over: the
+    // pause is the same length either way, but this way it is legible
+    // rather than looking like the page died
     await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 
-    let reply;
-    try {
-      py.globals.set("_src", editor.value);
-      py.globals.set("_stdin", $("stdin").value || "");
-      py.globals.set("_name", open);
-      reply = JSON.parse(py.runPython("_epsilon_run(_src, _stdin, _name)"));
-    } catch (e) {
-      reply = { status: "error", out: "", err: String(e), line: null, ms: 0 };
-    }
+    const reply = lang === "python" ? runPythonHere() : await runOnServer();
 
     $("rule").classList.remove("busy");
-    $("run").disabled = false;
     busy = false;
+    $("run").disabled = false;
 
     if (reply.out) say(reply.out.replace(/\n+$/, ""));
     if (reply.err) sayError(reply.err, reply.line);
     if (!reply.out && !reply.err) say("no output", "note");
-    const seconds = reply.ms >= 1000 ? (reply.ms / 1000).toFixed(2) + " s"
-                                     : reply.ms + " ms";
-    state(reply.status === "ok" ? "ok · " + seconds : "error · " + seconds,
+    const label = reply.phase === "compile" ? "did not compile"
+      : reply.status === "ok" ? "ok" : "error";
+    state(label + " · " + took(reply.ms),
           reply.status === "ok" ? "ok" : "bad");
     editor.focus();
   }
 
   $("run").addEventListener("click", run);
-  $("stdinToggle").addEventListener("click", () => {
-    const row = $("stdinRow");
-    row.hidden = !row.hidden;
-    if (!row.hidden) $("stdin").focus();
+  $("stdinBtn").addEventListener("click", () => {
+    const wrap = $("stdinWrap");
+    wrap.hidden = !wrap.hidden;
+    $("stdinBtn").classList.toggle("on", !wrap.hidden);
+    if (!wrap.hidden) $("stdin").focus();
+    else editor.focus();
+  });
+  $("stdin").addEventListener("input", () => {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(save, 400);
   });
 
   window.addEventListener("keydown", (ev) => {
@@ -344,33 +445,32 @@ def _epsilon_run(src, stdin_text, filename="main.py"):
     if (busy) { ev.preventDefault(); ev.returnValue = ""; }
   });
 
-  /* ---- boot ------------------------------------------------------ */
+  /* ---- boot ------------------------------------------------------- */
 
   function step(msg, pct) {
     $("bootMsg").textContent = msg;
     $("bootBar").style.width = pct + "%";
   }
 
-  function bootFailed(err, hint) {
-    $("bootMsg").textContent = "Could not start.";
-    $("bootHint").innerHTML = "";
-    $("bootHint").appendChild(el("div", "", String((err && err.message) || err)));
-    if (hint) $("bootHint").appendChild(el("div", "", hint));
-    state("offline", "bad");
+  function done() {
+    $("boot").classList.add("gone");
+    setTimeout(() => { const b = $("boot"); if (b) b.remove(); }, 480);
+    editor.focus();
   }
 
   async function boot() {
     applyTheme();
-    drawLigButton();
-    drawTabs();
-    editor.value = files[open];
+    drawLangs();
+    editor.value = source[lang];
+    $("stdin").value = read(KEY_STDIN, "") || "";
     $("run").disabled = true;
-    state("loading python", "busy");
+    state("starting", "busy");
 
+    step("looking for a compiler", 8);
+    await probeServer();
+
+    step("starting python", 30);
     try {
-      step("Fetching Python…", 12);
-      $("bootHint").textContent =
-        "The first visit downloads Python (about 10 MB) and caches it.";
       await new Promise((resolve, reject) => {
         const tag = document.createElement("script");
         tag.src = PYODIDE + "pyodide.js";
@@ -378,24 +478,34 @@ def _epsilon_run(src, stdin_text, filename="main.py"):
         tag.onerror = () => reject(new Error("could not reach the Pyodide CDN"));
         document.head.appendChild(tag);
       });
-
-      step("Starting Python…", 55);
+      step("starting python", 60);
       py = await window.loadPyodide({ indexURL: PYODIDE });
-
-      step("Ready.", 100);
       py.runPython(PREAMBLE);
-      $("bootHint").textContent = "";
-      $("run").disabled = false;
-      state("ready", "");
-      $("boot").classList.add("gone");
-      setTimeout(() => $("boot").remove(), 500);
-      editor.focus();
+      can.python = true;
+      step("ready", 100);
+      drawRun();
+      explain();
+      done();
     } catch (err) {
-      bootFailed(err, "This page needs one-time access to cdn.jsdelivr.net. " +
-        "If your network blocks it, try another connection.");
+      // Python is the only thing that failed. If a server is here, C++
+      // and Java still run, so the page is worth opening either way.
+      step("python could not start", 100);
+      drawRun();
+      done();
+      sayError("Python could not start: " +
+        String((err && err.message) || err) +
+        "\nThis page fetches Python once from cdn.jsdelivr.net. " +
+        "If your network blocks it, the editor still works.", null);
+      state("no python", "bad");
+      if (lang !== "python" && !can[lang]) say(whyNot(lang), "why");
     }
   }
 
-  window.Epsilon = { run, save, openFile, get files() { return files; } };
+  window.Epsilon = {
+    run, save, choose,
+    get source() { return source; },
+    get language() { return lang; },
+    get capabilities() { return Object.assign({ server }, can); },
+  };
   boot();
 })();

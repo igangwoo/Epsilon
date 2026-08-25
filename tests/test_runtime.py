@@ -1,4 +1,4 @@
-"""Running Python and C++ — real subprocesses, honest reporting."""
+"""Running Python, C++ and Java — real subprocesses, honest reporting."""
 
 import shutil
 
@@ -9,6 +9,8 @@ from epsilon.runtime.pyrepl import PythonRepl
 
 HAS_CXX = shutil.which("g++") or shutil.which("clang++")
 needs_cxx = pytest.mark.skipif(not HAS_CXX, reason="no C++ compiler")
+HAS_JDK = shutil.which("javac") and shutil.which("java")
+needs_jdk = pytest.mark.skipif(not HAS_JDK, reason="no JDK")
 
 
 # --------------------------------------------------------------------------
@@ -94,6 +96,90 @@ def test_cpp_runtime_failure_reports_exit_code():
     assert not r.ok and r.phase == "run" and r.exit_code == 3
 
 
+# --------------------------------------------------------------------------
+# java
+# --------------------------------------------------------------------------
+
+HELLO_JAVA = ('public class Main {\n'
+              '    public static void main(String[] a) {\n'
+              '        System.out.println("hi");\n'
+              '    }\n'
+              '}\n')
+
+
+@needs_jdk
+def test_java_compiles_and_runs():
+    r = run_code("java", HELLO_JAVA)
+    assert r.ok and r.phase == "run"
+    assert r.stdout == "hi\n"
+
+
+@needs_jdk
+def test_java_reads_stdin():
+    src = ('import java.util.Scanner;\n'
+           'public class Main {\n'
+           '    public static void main(String[] a) {\n'
+           '        Scanner s = new Scanner(System.in);\n'
+           '        int n = s.nextInt();\n'
+           '        System.out.println(n * n);\n'
+           '    }\n'
+           '}\n')
+    assert run_code("java", src, stdin="9\n").stdout == "81\n"
+
+
+@needs_jdk
+def test_java_compile_error_maps_to_the_source_line():
+    src = ('public class Main {\n'
+           '    public static void main(String[] a) {\n'
+           '        int n = "not an int";\n'
+           '    }\n'
+           '}\n')
+    r = run_code("java", src)
+    assert not r.ok and r.phase == "compile"
+    [d] = [d for d in r.diagnostics if d["severity"] == "error"]
+    assert d["span"][0] == 3
+    assert "int" in d["message"]
+
+
+@needs_jdk
+def test_java_runtime_failure_is_the_program_s_own():
+    src = ('public class Main {\n'
+           '    public static void main(String[] a) {\n'
+           '        throw new RuntimeException("boom");\n'
+           '    }\n'
+           '}\n')
+    r = run_code("java", src)
+    assert not r.ok and r.phase == "run" and r.exit_code == 1
+    assert "boom" in r.stderr
+
+
+@needs_jdk
+def test_java_stderr_holds_the_program_and_not_the_jvm():
+    """The JVM announces its own environment before `main` starts. That
+    line is never the program's output, and leaving it in makes every
+    run look like it printed something it did not."""
+    import os
+
+    keep = os.environ.get("JAVA_TOOL_OPTIONS")
+    os.environ["JAVA_TOOL_OPTIONS"] = "-Dfile.encoding=UTF-8"
+    try:
+        r = run_code("java", HELLO_JAVA)
+    finally:
+        if keep is None:
+            os.environ.pop("JAVA_TOOL_OPTIONS", None)
+        else:
+            os.environ["JAVA_TOOL_OPTIONS"] = keep
+    assert r.ok and r.stdout == "hi\n"
+    assert "Picked up" not in r.stderr, r.stderr
+
+
+def test_java_without_a_public_class_says_so():
+    """javac says this too, but much later and much less clearly."""
+    r = run_code("java", "class Helper { }")
+    assert not r.ok and r.phase == "compile"
+    assert "public class" in r.message
+
+
 def test_unknown_language_is_refused_plainly():
     r = run_code("rust", "fn main() {}")
     assert not r.ok and "not a runnable language" in r.message
@@ -103,6 +189,7 @@ def test_available_languages_tells_the_truth():
     langs = available_languages()
     assert langs["python"] is True
     assert langs["cpp"] == bool(HAS_CXX)
+    assert langs["java"] == bool(HAS_JDK)
 
 
 # --------------------------------------------------------------------------

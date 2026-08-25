@@ -9,10 +9,11 @@
  * Three rules keep it quick, and each is load-bearing:
  *
  *   1. A keystroke repaints; a caret move does not. Highlighting is
- *      cached against the exact source it was built from.
+ *      cached against the exact source it was built from, and only the
+ *      lines on screen are ever in the document.
  *   2. Nothing on the typing path leaves the page. Completion comes
- *      from the buffer's own words — Python runs on this thread, so
- *      asking it per keystroke would freeze the page.
+ *      from the buffer's own words and a fixed word list — Python runs
+ *      on this thread, so asking it per keystroke would freeze the tab.
  *   3. The caret is interpolated in a frame loop, not by a CSS
  *      transition. A transition restarts from zero velocity on every
  *      keystroke, which is exactly what makes a caret feel steppy.
@@ -20,151 +21,173 @@
 (function (root) {
   "use strict";
 
-  const KEYWORDS = new Set(("False None True and as assert async await break " +
-    "class continue def del elif else except finally for from global if " +
-    "import in is lambda nonlocal not or pass raise return try while with " +
-    "yield match case").split(" "));
-  const BUILTINS = new Set(("abs all any bool bytes callable chr dict dir " +
-    "divmod enumerate filter float format frozenset getattr hasattr hash " +
-    "hex id input int isinstance issubclass iter len list map max min next " +
-    "object oct open ord pow print range repr reversed round set setattr " +
-    "sorted str sum tuple type vars zip self cls super __init__ __name__ " +
-    "Exception ValueError TypeError KeyError IndexError").split(" "));
+  const set = (s) => new Set(s.split(/\s+/).filter(Boolean));
+
+  /* =================================================================
+   * Languages
+   *
+   * Each entry is everything the editor needs to know about a language
+   * and nothing more: how a comment starts, what opens a block, which
+   * words are reserved. Three small tables beat three code paths.
+   * ================================================================= */
+
+  const LANGS = {
+    python: {
+      id: "python", label: "python", file: "main.py",
+      line: "#", comment: "# ", block: null, triple: true, preproc: false,
+      unit: "    ", colon: true, braces: false,
+      dedentAfter: /^\s*(return|pass|break|continue|raise)\b/,
+      keywords: set(`False None True and as assert async await break class
+        continue def del elif else except finally for from global if import
+        in is lambda nonlocal not or pass raise return try while with yield
+        match case`),
+      known: set(`abs all any bool bytes callable chr dict dir divmod
+        enumerate filter float format frozenset getattr hasattr hash hex id
+        input int isinstance issubclass iter len list map max min next object
+        oct open ord pow print range repr reversed round set setattr sorted
+        str sum tuple type vars zip self cls super __init__ __name__ math
+        Exception ValueError TypeError KeyError IndexError`),
+    },
+
+    cpp: {
+      id: "cpp", label: "c++", file: "main.cpp",
+      line: "//", comment: "// ", block: true, triple: false, preproc: true,
+      unit: "    ", colon: false, braces: true, dedentAfter: null,
+      keywords: set(`alignas alignof and asm auto bool break case catch char
+        class const constexpr const_cast continue decltype default delete do
+        double dynamic_cast else enum explicit export extern false float for
+        friend goto if inline int long mutable namespace new noexcept nullptr
+        operator or private protected public register reinterpret_cast return
+        short signed sizeof static static_assert static_cast struct switch
+        template this throw true try typedef typeid typename union unsigned
+        using virtual void volatile wchar_t while`),
+      known: set(`std string vector map set unordered_map unordered_set pair
+        tuple array deque queue stack priority_queue cout cin cerr endl getline
+        printf scanf size_t int64_t uint64_t shared_ptr unique_ptr make_shared
+        make_unique sort reverse accumulate find begin end push_back
+        emplace_back size empty length substr to_string stoi stod ostream
+        istream iostream vector iterator const_iterator`),
+    },
+
+    java: {
+      id: "java", label: "java", file: "Main.java",
+      line: "//", comment: "// ", block: true, triple: false, preproc: false,
+      unit: "    ", colon: false, braces: true, dedentAfter: null,
+      keywords: set(`abstract assert boolean break byte case catch char class
+        const continue default do double else enum extends final finally float
+        for goto if implements import instanceof int interface long native new
+        package private protected public return short static strictfp super
+        switch synchronized this throw throws transient try void volatile
+        while var record sealed permits yield true false null`),
+      known: set(`String System out err println print printf Integer Double
+        Boolean Long Character Math List ArrayList Map HashMap Set HashSet
+        Arrays Collections Scanner StringBuilder Object Exception
+        RuntimeException Override length size add get put contains toString
+        valueOf parseInt parseDouble equals nextInt nextLine hasNext main
+        args`),
+    },
+  };
 
   /* =================================================================
    * Ligatures
    *
-   * A rendering layer, never an edit: the file on disk still says `>=`,
-   * and every keystroke, selection and column number is computed from
-   * that text. What changes is only what the eye is shown.
+   * A rendering layer, never an edit: the file still says `>=`, and
+   * every keystroke, selection and column number is computed from that
+   * text. What changes is only what the eye is shown.
    *
-   * The one hard rule is width. The textarea underneath owns hit
-   * testing and selection, and it lays every character out on a uniform
-   * monospace grid — so a ligature may occupy exactly as many cells as
-   * the source it stands for, no more and no less. Each one is drawn in
-   * a fixed `Nch` box, which is also why long words are absent here: a
-   * `lambda` rendered as one λ would leave five empty cells behind it,
-   * and a hole in the middle of a line is worse than the word.
+   * The hard rule is width. The textarea underneath owns hit testing
+   * and selection and lays every character out on a uniform monospace
+   * grid — so a ligature occupies exactly as many cells as the source
+   * it stands for. Each is drawn in a fixed `Nch` box.
    *
-   * Strings and comments are left alone. Their contents are data, and
-   * showing `>=` inside a string as `≥` would misreport what the
-   * program holds.
+   * The set is deliberately five. Every one of them means the same
+   * thing in all three languages, and none of them is ambiguous: `<-`
+   * would be a comparison against a negative number, `//` is a comment
+   * in two of the three, and `<<` is how C++ prints. Those stay text.
    * ================================================================= */
 
-  //: two- and three-character operators. Longest first: `<->` must be
-  //: tried before `<-`, and `//` before `/`.
   const LIG_OPS = [
-    ["<->", "↔"], ["...", "…"],
-    ["->", "→"], ["<-", "←"], ["=>", "⇒"],
-    ["==", "≡"], ["!=", "≠"], [">=", "≥"], ["<=", "≤"],
-    [":=", "≔"], ["<<", "≪"], [">>", "≫"], ["//", "⫽"],
+    ["->", "→"], [">=", "≥"], ["<=", "≤"],
+    ["!=", "≠"], ["==", "≡"],
   ];
 
-  //: single characters, and the only ones that cost nothing at all —
-  //: one cell in, one cell out. Only when spaced, so `*args` and a bare
-  //: `/` in a path keep their meaning.
-  const LIG_SPACED = { "*": "×", "/": "÷", "-": "−" };
-
-  //: short enough that the leftover cells still read as one token
-  const LIG_WORDS = {
-    pi: "π", tau: "τ", inf: "∞",
-    not: "¬", and: "∧", or: "∨", in: "∈",
-  };
-
-  const SUP = { 0: "⁰", 1: "¹", 2: "²", 3: "³",
-                4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷",
-                8: "⁸", 9: "⁹", "-": "⁻" };
-  const SUB = { 0: "₀", 1: "₁", 2: "₂", 3: "₃",
-                4: "₄", 5: "₅", 6: "₆", 7: "₇",
-                8: "₈", 9: "₉" };
-
-  //: where a single glyph exists it beats digits-over-digits
-  const VULGAR = {
-    "1/2": "½", "1/3": "⅓", "2/3": "⅔", "1/4": "¼",
-    "3/4": "¾", "1/5": "⅕", "2/5": "⅖", "3/5": "⅗",
-    "4/5": "⅘", "1/6": "⅙", "5/6": "⅚", "1/7": "⅐",
-    "1/8": "⅛", "3/8": "⅜", "5/8": "⅝", "7/8": "⅞",
-    "1/9": "⅑", "1/10": "⅒",
-  };
-
-  const map = (text, table) =>
-    Array.from(text).map((ch) => table[ch] || ch).join("");
+  //: an operator character on either side means this is part of a
+  //: longer operator — `>>=`, `<=>`, `!==` — and not what it looks like
+  const GLUED = /[=<>!+\-*/%&|^~]/;
 
   /** One ligature, in a box exactly as wide as the text it replaces. */
-  function cell(width, glyph, cls) {
-    return '<span class="lg' + (cls ? " " + cls : "") + '" style="width:' +
-      width + 'ch">' + glyph + "</span>";
-  }
+  const cell = (width, glyph) =>
+    '<span class="lg" style="width:' + width + 'ch">' + glyph + "</span>";
 
-  /**
-   * The ligature starting at `i`, or null.
-   *
-   * Order matters: an exponent claims its digits before `*` can become
-   * a times sign, and the two-character operators are tried before the
-   * spaced single characters that share their first letter.
-   */
-  function ligAt(src, i, cls) {
-    const rest = src.slice(i);
-
-    // x**2 — the exponent hugs its base, so this box is left-aligned
-    const power = /^\*\*\s*(-?\d+)(?![\w.])/.exec(rest);
-    if (power) {
-      return { len: power[0].length,
-               html: cell(power[0].length, map(power[1], SUP), "lg-left") };
-    }
-
+  function ligAt(src, i) {
     for (const [text, glyph] of LIG_OPS) {
-      if (rest.startsWith(text)) {
-        return { len: text.length, html: cell(text.length, glyph, cls) };
-      }
-    }
-
-    const ch = src[i];
-    if (LIG_SPACED[ch] && src[i - 1] === " " && src[i + 1] === " ") {
-      return { len: 1, html: cell(1, LIG_SPACED[ch], cls) };
+      if (!src.startsWith(text, i)) continue;
+      if (GLUED.test(src[i - 1] || "") ||
+          GLUED.test(src[i + text.length] || "")) return null;
+      return { len: text.length, html: cell(text.length, glyph) };
     }
     return null;
-  }
-
-  /** `3/4` as a fraction — a single glyph where one exists, else the
-      numerator raised over a fraction slash. */
-  function fractionAt(src, i) {
-    const m = /^(\d+)\/(\d+)(?![\w.])/.exec(src.slice(i));
-    if (!m) return null;
-    const glyph = VULGAR[m[1] + "/" + m[2]]
-      || (map(m[1], SUP) + "⁄" + map(m[2], SUB));
-    return { len: m[0].length, html: cell(m[0].length, glyph, "n") };
   }
 
   const esc = (s) => s.replace(/[&<>]/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
   /**
-   * One line of Python as HTML.
+   * One line as HTML.
    *
    * Deliberately a lexer over one line and not a parser: it never needs
-   * to be right about the program, only about what the eye should group.
-   * `state` carries an open triple-quoted string across lines.
+   * to be right about the program, only about what the eye should
+   * group. `state` carries an open triple-quoted string or an open
+   * `/* *\/` comment across lines.
    */
-  function paintLine(src, state, lig) {
+  function paintLine(src, state, spec, lig) {
     let out = "";
     let i = 0;
+
     if (state.triple) {
       const end = src.indexOf(state.triple);
       if (end === -1) return '<span class="s">' + esc(src) + "</span>";
       out += '<span class="s">' + esc(src.slice(0, end + 3)) + "</span>";
       i = end + 3;
       state.triple = null;
+    } else if (state.block) {
+      const end = src.indexOf("*/");
+      if (end === -1) return '<span class="c">' + esc(src) + "</span>";
+      out += '<span class="c">' + esc(src.slice(0, end + 2)) + "</span>";
+      i = end + 2;
+      state.block = false;
+    } else if (spec.preproc) {
+      // `#include <vector>` — the directive is the keyword, and what
+      // follows is left to the ordinary lexer so a quoted header still
+      // reads as a string
+      const m = /^(\s*)(#\s*[A-Za-z]+)/.exec(src);
+      if (m) {
+        out += esc(m[1]) + '<span class="k">' + esc(m[2]) + "</span>";
+        i = m[0].length;
+      }
     }
+
     while (i < src.length) {
       const c = src[i];
-      if (c === "#") {
+
+      if (spec.line && src.startsWith(spec.line, i)) {
         out += '<span class="c">' + esc(src.slice(i)) + "</span>";
         break;
       }
+      if (spec.block && src.startsWith("/*", i)) {
+        const end = src.indexOf("*/", i + 2);
+        if (end === -1) {
+          state.block = true;
+          out += '<span class="c">' + esc(src.slice(i)) + "</span>";
+          break;
+        }
+        out += '<span class="c">' + esc(src.slice(i, end + 2)) + "</span>";
+        i = end + 2;
+        continue;
+      }
       if (c === '"' || c === "'") {
-        const triple = src.slice(i, i + 3);
-        if (triple === c + c + c) {
+        if (spec.triple && src.slice(i, i + 3) === c + c + c) {
+          const triple = c + c + c;
           const end = src.indexOf(triple, i + 3);
           if (end === -1) {
             state.triple = triple;
@@ -182,32 +205,25 @@
         continue;
       }
       if (c >= "0" && c <= "9") {
-        if (lig) {
-          const frac = fractionAt(src, i);
-          if (frac) { out += frac.html; i += frac.len; continue; }
-        }
         let j = i;
-        while (j < src.length && /[0-9._boxXa-fA-F]/.test(src[j])) j++;
+        while (j < src.length && /[0-9._boxXa-fA-FlLuUfF']/.test(src[j])) j++;
         out += '<span class="n">' + esc(src.slice(i, j)) + "</span>";
         i = j;
         continue;
       }
-      if (/[A-Za-z_]/.test(c)) {
+      if (/[A-Za-z_$]/.test(c)) {
         let j = i;
-        while (j < src.length && /[A-Za-z0-9_]/.test(src[j])) j++;
+        while (j < src.length && /[A-Za-z0-9_$]/.test(src[j])) j++;
         const word = src.slice(i, j);
-        const cls = KEYWORDS.has(word) ? "k" : BUILTINS.has(word) ? "d" : null;
-        if (lig && LIG_WORDS[word]) {
-          out += cell(word.length, LIG_WORDS[word], cls);
-        } else {
-          out += cls ? '<span class="' + cls + '">' + esc(word) + "</span>"
-                     : esc(word);
-        }
+        const cls = spec.keywords.has(word) ? "k"
+                  : spec.known.has(word) ? "d" : null;
+        out += cls ? '<span class="' + cls + '">' + esc(word) + "</span>"
+                   : esc(word);
         i = j;
         continue;
       }
       if (lig) {
-        const hit = ligAt(src, i, "o");
+        const hit = ligAt(src, i);
         if (hit) { out += hit.html; i += hit.len; continue; }
       }
       out += esc(c);
@@ -216,9 +232,10 @@
     return out;
   }
 
-  function paint(src, ligatures) {
-    const state = { triple: null };
-    return src.split("\n").map((line) => paintLine(line, state, !!ligatures));
+  function paint(src, spec, ligatures) {
+    const state = { triple: null, block: false };
+    const lang = typeof spec === "string" ? LANGS[spec] : (spec || LANGS.python);
+    return src.split("\n").map((line) => paintLine(line, state, lang, !!ligatures));
   }
 
   /* ---- pure text operations, so they can be reasoned about alone ---- */
@@ -231,17 +248,30 @@
     },
     indentOf: (line) => (line.match(/^[ \t]*/) || [""])[0],
 
-    /** What Enter should insert here. */
-    newline(text, at) {
+    /**
+     * What Enter should insert here, and how far back from the end of
+     * it the caret belongs. Splitting a pair — Enter between `{` and
+     * `}` — is the only case where those two differ.
+     */
+    newline(text, at, spec) {
       const start = Ops.lineStart(text, at);
       const line = text.slice(start, Ops.lineEnd(text, at));
       const before = text.slice(start, at).trimEnd();
+      const after = text.slice(at, Ops.lineEnd(text, at));
+      const unit = spec.unit;
       let indent = Ops.indentOf(line);
-      if (/[:([{]$/.test(before)) indent += "    ";
-      else if (/^\s*(return|pass|break|continue|raise)\b/.test(before)) {
-        indent = indent.slice(0, Math.max(0, indent.length - 4));
+
+      if (/[([{]$/.test(before) || (spec.colon && /:$/.test(before))) {
+        const inner = indent + unit;
+        if (/^\s*[)\]}]/.test(after)) {
+          return { ins: "\n" + inner + "\n" + indent, back: indent.length + 1 };
+        }
+        return { ins: "\n" + inner, back: 0 };
       }
-      return "\n" + indent;
+      if (spec.dedentAfter && spec.dedentAfter.test(before)) {
+        indent = indent.slice(0, Math.max(0, indent.length - unit.length));
+      }
+      return { ins: "\n" + indent, back: 0 };
     },
 
     /** The [start, end) of the whole lines a selection touches. */
@@ -251,19 +281,19 @@
       return [start, end];
     },
 
-    indent(text, a, b) {
+    indent(text, a, b, unit) {
       const [s, e] = Ops.block(text, a, b);
       const body = text.slice(s, e).split("\n")
-        .map((l) => (l.length ? "    " + l : l)).join("\n");
+        .map((l) => (l.length ? unit + l : l)).join("\n");
       return { text: text.slice(0, s) + body + text.slice(e),
-               a: a + 4, b: b + (body.length - (e - s)) };
+               a: a + unit.length, b: b + (body.length - (e - s)) };
     },
 
-    dedent(text, a, b) {
+    dedent(text, a, b, unit) {
       const [s, e] = Ops.block(text, a, b);
       let firstCut = 0;
       const body = text.slice(s, e).split("\n").map((l, i) => {
-        const cut = Math.min(4, (l.match(/^ */) || [""])[0].length);
+        const cut = Math.min(unit.length, (l.match(/^ */) || [""])[0].length);
         if (i === 0) firstCut = cut;
         return l.slice(cut);
       }).join("\n");
@@ -272,18 +302,21 @@
                b: Math.max(s, b - ((e - s) - body.length)) };
     },
 
-    comment(text, a, b) {
+    comment(text, a, b, token) {
       const [s, e] = Ops.block(text, a, b);
       const lines = text.slice(s, e).split("\n");
       const live = lines.filter((l) => l.trim());
-      const off = live.length > 0 && live.every((l) => l.trimStart().startsWith("#"));
+      const mark = token.trim();
+      const off = live.length > 0 &&
+        live.every((l) => l.trimStart().startsWith(mark));
       const body = lines.map((l) => {
         if (!l.trim()) return l;
         const ind = Ops.indentOf(l);
         const rest = l.slice(ind.length);
         return off
-          ? ind + (rest.startsWith("# ") ? rest.slice(2) : rest.slice(1))
-          : ind + "# " + rest;
+          ? ind + (rest.startsWith(token) ? rest.slice(token.length)
+                                          : rest.slice(mark.length))
+          : ind + token + rest;
       }).join("\n");
       return { text: text.slice(0, s) + body + text.slice(e),
                a, b: b + (body.length - (e - s)) };
@@ -292,8 +325,8 @@
     /** The word around `at`, as [start, end), or null. */
     wordAt(text, at) {
       let s = at, e = at;
-      while (s > 0 && /[A-Za-z0-9_]/.test(text[s - 1])) s--;
-      while (e < text.length && /[A-Za-z0-9_]/.test(text[e])) e++;
+      while (s > 0 && /[A-Za-z0-9_$]/.test(text[s - 1])) s--;
+      while (e < text.length && /[A-Za-z0-9_$]/.test(text[e])) e++;
       return e > s ? [s, e] : null;
     },
   };
@@ -312,6 +345,7 @@
     const doc = ta.ownerDocument;
     const win = doc.defaultView;
 
+    let spec = LANGS[opts.language] || LANGS.python;
     let lines = [""];
     let starts = [0];
     let painted = null;         // the source `lines` was built from
@@ -352,7 +386,7 @@
       probe.remove();
       metrics = {
         lh: measured > size * 0.6 ? measured
-          : (declared > size * 0.6 ? declared : size * 1.85),
+          : (declared > size * 0.6 ? declared : size * 1.72),
         charW,
         padTop: parseFloat(cs.paddingTop) || 0,
       };
@@ -370,8 +404,7 @@
       need = 0;
       if (composing) return;      // never disturb the layer mid-composition
       const src = ta.value;
-      if (flags & 1) reflow(src);
-      if (flags & 1) drawWindow(true);
+      if (flags & 1) { reflow(src); drawWindow(true); }
       else drawWindow(false);
       if (flags & 2) {
         markLine();
@@ -382,7 +415,7 @@
 
     function reflow(src) {
       if (src === painted) return;
-      lines = paint(src, opts.ligatures && opts.ligatures());
+      lines = paint(src, spec, opts.ligatures ? opts.ligatures() : true);
       const next = new Array(lines.length);
       let at = 0;
       for (let i = 0; i < lines.length; i++) {
@@ -410,7 +443,8 @@
       const top = ta.scrollTop;
       const height = ta.clientHeight || 600;
       const from = Math.max(0, Math.floor(top / m.lh) - OVERSCAN);
-      const to = Math.min(lines.length, Math.ceil((top + height) / m.lh) + OVERSCAN);
+      const to = Math.min(lines.length,
+                          Math.ceil((top + height) / m.lh) + OVERSCAN);
       if (!force && from === shown[0] && to === shown[1]) return;
       shown = [from, to];
       paintEl.firstElementChild.innerHTML =
@@ -438,7 +472,8 @@
     function sync() {
       const m = measure();
       const y = shown[0] * m.lh - ta.scrollTop;
-      paintEl.style.transform = "translate3d(" + (-ta.scrollLeft) + "px," + y + "px,0)";
+      paintEl.style.transform =
+        "translate3d(" + (-ta.scrollLeft) + "px," + y + "px,0)";
       gutter.style.transform = "translate3d(0," + y + "px,0)";
       aimCaret();
       if (hints && !hints.hidden) placeHints();
@@ -548,17 +583,18 @@
 
     function words(text) {
       const now = performance.now();
-      if (index && now - index.at < 900
+      if (index && index.spec === spec && now - index.at < 900
           && Math.abs(text.length - index.len) < 240) return index.seen;
       const seen = new Map();
-      const re = /[A-Za-z_][A-Za-z0-9_]{1,}/g;
+      const re = /[A-Za-z_$][A-Za-z0-9_$]{1,}/g;
       let m;
       while ((m = re.exec(text))) seen.set(m[0], (seen.get(m[0]) || 0) + 1);
-      index = { at: now, len: text.length, seen };
+      index = { at: now, len: text.length, spec, seen };
       return seen;
     }
 
     function suggest() {
+      if (!hints) return;
       const text = ta.value;
       const p = position();
       const w = Ops.wordAt(text, p.at);
@@ -567,24 +603,25 @@
       if (prefix.length < 2) return closeHints();
       const low = prefix.toLowerCase();
       const out = [];
-      KEYWORDS.forEach((k) => {
+      spec.keywords.forEach((k) => {
         if (k.length > prefix.length && k.toLowerCase().startsWith(low)) {
           out.push({ name: k, kind: "keyword" });
         }
       });
-      BUILTINS.forEach((b) => {
+      spec.known.forEach((b) => {
         if (b.length > prefix.length && b.toLowerCase().startsWith(low)) {
-          out.push({ name: b, kind: "builtin" });
+          out.push({ name: b, kind: spec.label });
         }
       });
       words(text).forEach((count, word) => {
         if (word !== prefix && word.toLowerCase().startsWith(low)
-            && !KEYWORDS.has(word) && !BUILTINS.has(word)) {
+            && !spec.keywords.has(word) && !spec.known.has(word)) {
           out.push({ name: word, kind: "here", n: count });
         }
       });
       if (!out.length) return closeHints();
-      out.sort((a, b) => (b.n || 0) - (a.n || 0) || a.name.length - b.name.length);
+      out.sort((a, b) =>
+        (b.n || 0) - (a.n || 0) || a.name.length - b.name.length);
       list = out.slice(0, 12);
       pick = 0;
       drawHints(prefix);
@@ -595,8 +632,9 @@
       list.forEach((item, i) => {
         const row = doc.createElement("div");
         row.className = "hint" + (i === pick ? " on" : "");
-        row.innerHTML = "<em>" + esc(item.name.slice(0, prefix.length)) + "</em>" +
-          esc(item.name.slice(prefix.length)) + "<span>" + item.kind + "</span>";
+        row.innerHTML = "<em>" + esc(item.name.slice(0, prefix.length)) +
+          "</em>" + esc(item.name.slice(prefix.length)) +
+          "<span>" + esc(item.kind) + "</span>";
         row.addEventListener("mousedown", (ev) => {
           ev.preventDefault();
           pick = i;
@@ -617,7 +655,7 @@
       hints.style.top = top + "px";
     }
 
-    function closeHints() { hints.hidden = true; list = []; }
+    function closeHints() { if (hints) hints.hidden = true; list = []; }
 
     function accept() {
       const item = list[pick];
@@ -635,39 +673,63 @@
       const text = ta.value;
       const a = ta.selectionStart, b = ta.selectionEnd;
 
-      if (!hints.hidden) {
+      if (hints && !hints.hidden) {
         if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
           ev.preventDefault();
-          pick = (pick + (ev.key === "ArrowDown" ? 1 : list.length - 1)) % list.length;
+          pick = (pick + (ev.key === "ArrowDown" ? 1 : list.length - 1))
+                 % list.length;
           Array.from(hints.children).forEach((el, i) =>
             el.classList.toggle("on", i === pick));
           return;
         }
-        if (ev.key === "Enter" || ev.key === "Tab") { ev.preventDefault(); return accept(); }
+        if (ev.key === "Enter" || ev.key === "Tab") {
+          ev.preventDefault();
+          return accept();
+        }
         if (ev.key === "Escape") { ev.preventDefault(); return closeHints(); }
       }
 
       if (ev.key === "Enter" && !ev.shiftKey && !ev.metaKey && !ev.ctrlKey) {
         ev.preventDefault();
-        return insert(Ops.newline(text, a));
+        const r = Ops.newline(text, a, spec);
+        insert(r.ins);
+        if (r.back) {
+          const at = ta.selectionStart - r.back;
+          ta.setSelectionRange(at, at);
+          schedule(2);
+        }
+        return;
       }
       if (ev.key === "Tab") {
         ev.preventDefault();
         if (a !== b || ev.shiftKey) {
-          const r = ev.shiftKey ? Ops.dedent(text, a, b) : Ops.indent(text, a, b);
+          const r = ev.shiftKey ? Ops.dedent(text, a, b, spec.unit)
+                                : Ops.indent(text, a, b, spec.unit);
           return replaceAll(r.text, r.a, r.b);
         }
-        return insert("    ");
+        return insert(spec.unit);
       }
       if ((ev.ctrlKey || ev.metaKey) && ev.key === "/") {
         ev.preventDefault();
-        const r = Ops.comment(text, a, b);
+        const r = Ops.comment(text, a, b, spec.comment);
         return replaceAll(r.text, r.a, r.b);
       }
       if ((ev.ctrlKey || ev.metaKey) && ev.key === " ") {
         ev.preventDefault();
         return suggest();
       }
+
+      // a `}` alone on its line closes the block it belongs to, so it
+      // takes back one level as you type it
+      if (spec.braces && ev.key === "}" && a === b) {
+        const head = text.slice(Ops.lineStart(text, a), a);
+        if (/^[ \t]+$/.test(head) && head.length >= spec.unit.length) {
+          ev.preventDefault();
+          ta.setSelectionRange(a - spec.unit.length, a);
+          return insert("}");
+        }
+      }
+
       if (PAIRS[ev.key] && !ev.ctrlKey && !ev.metaKey) {
         const close = PAIRS[ev.key];
         if (a !== b) {                       // wrap the selection
@@ -677,7 +739,7 @@
           ta.setSelectionRange(a + 1, a + 1 + sel.length);
           return;
         }
-        if (!/[A-Za-z0-9_]/.test(text[a] || "")) {
+        if (!/[A-Za-z0-9_$]/.test(text[a] || "")) {
           ev.preventDefault();
           insert(ev.key + close);
           ta.setSelectionRange(a + 1, a + 1);
@@ -739,6 +801,15 @@
         closeHints();
         schedule(3);
       },
+      get language() { return spec.id; },
+      setLanguage(name) {
+        spec = LANGS[name] || LANGS.python;
+        index = null;
+        painted = null;
+        shown = [-1, -1];
+        closeHints();
+        schedule(3);
+      },
       position,
       focus: () => ta.focus(),
       refresh: () => { metrics = null; shown = [-1, -1]; schedule(3); },
@@ -755,5 +826,5 @@
     };
   }
 
-  root.EpsilonEditor = { Editor, Ops, paint, KEYWORDS, BUILTINS };
+  root.EpsilonEditor = { Editor, Ops, paint, LANGS };
 })(typeof window !== "undefined" ? window : globalThis);
