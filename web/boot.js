@@ -13,7 +13,7 @@
   const WHEEL = "./epsilon_math-0.1.0-py3-none-any.whl";
   //!BUILD_ID — stamped by scripts/build_web.py from the asset contents,
   // so a fresh page can never pick up a stale cached script
-  const BUILD_ID = "9df8d2701799";
+  const BUILD_ID = "d32c39ccc755";
   const CACHE_BUST = "?v=" + BUILD_ID;
 
   const realFetch = window.fetch.bind(window);
@@ -71,6 +71,15 @@ for i in range(7):
     const path = u.pathname;
     const method = (opts && opts.method) || "GET";
     const body = opts && opts.body ? JSON.parse(opts.body) : {};
+
+    // Pyodide runs on this thread, and `runPython` is synchronous: while
+    // it works, nothing paints. Yielding to a macrotask first does not
+    // make the call any shorter, but it lets the keystroke that triggered
+    // it appear before the pause instead of after — which is the whole
+    // difference between "thinking" and "stuck".
+    if (path !== "/api/files" && path !== "/api/file") {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
 
     if (path === "/api/meta") {
       return jsonResponse(JSON.parse(PY.runPython("import bridge; bridge.meta()")));

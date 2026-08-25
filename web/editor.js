@@ -565,6 +565,11 @@
   //: worth on every keystroke; the buffer stays editable, plainly drawn
   const HUGE = 260000;
   const MAX_OCCURRENCES = 300;
+
+  //: how long the keyboard must be still before the language service is
+  //: asked. In the browser build that call runs Python on the main
+  //: thread, so firing it per keystroke freezes the page while typing.
+  const SEMANTIC_DELAY = 140;
   const WORD_CHAR = /[A-Za-z0-9_]/;
 
   function escapeHtml(s) {
@@ -1440,7 +1445,7 @@
      * Waiting for that round trip before drawing anything is what made
      * completion feel slow; the answer was rarely slow, the wait was.
      * ============================================================== */
-    async openCompletion(explicit) {
+    openCompletion(explicit) {
       if (!this.opts.completions) return;
       const c = this.cursor();
       const text = this.input.value;
@@ -1449,37 +1454,47 @@
       const prefix = text.slice(prefixStart, c.at);
       const dotted = text[c.at - 1] === "." ||
         (this.language === "cpp" && text.slice(c.at - 2, c.at) === "::");
+      clearTimeout(this._acTimer);
       if (!explicit && prefix.length < 1 && !dotted) {
         return this.closeCompletion();
       }
       const token = ++this._ac.token;
       this._ac.from = prefixStart;
 
-      // 1. whatever can be answered without leaving the page
+      // 1. what can be answered without leaving the page — immediately
       const from = lineStart(text, c.at);
-      const cacheKey = this.language + "\u0000" + text.slice(from, c.at);
-      const cached = this._ac.cache.get(cacheKey);
+      const key = this.language + "\u0000" + text.slice(from, c.at);
+      const cached = this._ac.cache.get(key);
       const local = cached || (dotted ? [] : this._localCompletions(text, prefix));
       if (local.length) this._showCompletion(local);
       else if (!dotted && !explicit) this.closeCompletion();
-      if (cached) return;                    // already the semantic answer
+      if (cached) return;                     // already the semantic answer
 
-      // 2. and the answer that needed a round trip
+      // 2. the language service, once the typing pauses
+      const ask = () => this._semanticCompletion(
+        { text, line: c.line, col: c.col - 1, prefix, key }, token, !local.length);
+      if (explicit) ask();
+      else this._acTimer = setTimeout(ask, SEMANTIC_DELAY);
+    }
+
+    async _semanticCompletion(ctx, token, wasEmpty) {
+      if (token !== this._ac.token) return;
       let items;
       try {
         items = await this.opts.completions({
-          language: this.language, code: text,
-          line: c.line, col: c.col - 1, path: this.path, prefix,
+          language: this.language, code: ctx.text,
+          line: ctx.line, col: ctx.col, path: this.path, prefix: ctx.prefix,
         });
       } catch (e) { return; }
-      if (token !== this._ac.token) return;  // the caret moved on
+      if (token !== this._ac.token) return;   // the caret moved on
+      const prefix = ctx.prefix.toLowerCase();
       items = (items || []).filter((i) =>
-        !prefix || i.name.toLowerCase().startsWith(prefix.toLowerCase()));
+        !prefix || i.name.toLowerCase().startsWith(prefix));
       if (items.length) {
         if (this._ac.cache.size > 60) this._ac.cache.clear();
-        this._ac.cache.set(cacheKey, items);
+        this._ac.cache.set(ctx.key, items);
         this._showCompletion(items);
-      } else if (!local.length) {
+      } else if (wasEmpty) {
         this.closeCompletion();
       }
     }
@@ -1502,7 +1517,14 @@
      */
     _localCompletions(text, prefix) {
       if (!prefix) return [];
-      if (!this._identIndex || this._identIndex.src !== text) {
+      // Scanning the buffer on every keystroke costs more than it returns:
+      // the words in a file barely change between two characters. Rebuild
+      // when the text has moved on meaningfully, not on every edit.
+      const now = performance.now();
+      const stale = !this._identIndex
+        || now - this._identIndex.at > 900
+        || Math.abs(text.length - this._identIndex.len) > 240;
+      if (stale) {
         const seen = new Map();
         const re = /[A-Za-z_][A-Za-z0-9_]{1,}/g;
         const scan = text.length > HUGE ? text.slice(0, HUGE) : text;
@@ -1511,7 +1533,7 @@
         const syn = SYNTAX[this.language] || {};
         const words = new Set([...(syn.keywords || []),
                                ...(syn.secondary || [])]);
-        this._identIndex = { src: text, seen, words };
+        this._identIndex = { at: now, len: text.length, seen, words };
       }
       const { seen, words } = this._identIndex;
       const lower = prefix.toLowerCase();
@@ -1533,6 +1555,8 @@
     }
 
     closeCompletion() {
+      clearTimeout(this._acTimer);
+      this._ac.token++;             // strand any request already in flight
       this._ac.open = false;
       this.acEl.classList.add("hidden");
     }

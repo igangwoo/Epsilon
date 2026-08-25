@@ -416,8 +416,21 @@ standing in for Pyodide) against an index.html stripped back to `boot.js`
 alone, and checks that a missing asset is reported on the page rather than
 leaving it dead.
 
-Pyodide takes seconds to produce a first result, so **the IDE is on screen
-and interactive well before any of it arrives**. Anything the IDE draws must
+**Pyodide runs on the page's only thread, and `runPython` is
+synchronous**: while Python works, nothing paints. Two rules follow, and
+both are load-bearing for how the editor feels.
+
+* `boot.js` yields to a macrotask before entering Python, so the
+  keystroke that triggered a call appears *before* the pause rather than
+  after it.
+* Nothing on a per-keystroke path may cross into Python. Completion
+  answers immediately from the buffer and asks the language service only
+  once the typing pauses (`SEMANTIC_DELAY` in `editor.js`). Firing it per
+  keystroke measured 527ms on the worst key; debounced, every keystroke
+  is one frame.
+
+Pyodide also takes seconds to produce a first result, so **the IDE is on
+screen and interactive well before any of it arrives**. Anything the IDE draws must
 therefore cope with there being nothing to draw yet - the same test suite
 delays the first capability probe and interacts during that window.
 

@@ -305,7 +305,7 @@
             refreshChrome();
           }
         },
-        onCursor: () => { if (path === state.active) renderStatusbar(); },
+        onCursor: () => { if (path === state.active) updateCursorStatus(); },
         completions: async (ctx) => {
           // the API speaks jedi's convention: 1-based line, 0-based column
           const reply = await api("POST", "/api/complete", {
@@ -2673,9 +2673,27 @@
     return b;
   }
 
+  /**
+   * The caret moves far more often than anything else on this bar, so it
+   * gets its own path: patch the one segment that changed instead of
+   * rebuilding every button and its icon on each keystroke.
+   */
+  function updateCursorStatus() {
+    const seg = statusEls.position;
+    const entry = currentEditor();
+    if (!seg || !entry || !entry.editor.cursorPosition) return renderStatusbar();
+    const pos = entry.editor.cursorPosition();
+    const text = "Ln " + pos.line + ", Col " + pos.col +
+      (pos.selected ? " (" + pos.selected + " selected)" : "");
+    if (seg.textContent !== text) seg.textContent = text;
+  }
+
+  const statusEls = { position: null };
+
   function renderStatusbar() {
     const bar = $("#statusbar");
     if (!bar) return;
+    statusEls.position = null;
     bar.classList.toggle("hidden", !Settings.get("workbench.statusBar"));
     bar.innerHTML = "";
     const left = el("div", "wb-sb-side");
@@ -2715,10 +2733,12 @@
       const pos = entry.editor.cursorPosition
         ? entry.editor.cursorPosition() : null;
       if (pos) {
-        right.appendChild(sbSegment(
+        const seg = sbSegment(
           "Ln " + pos.line + ", Col " + pos.col +
             (pos.selected ? " (" + pos.selected + " selected)" : ""),
-          "Go to Line…", () => Commands.execute("go.line")));
+          "Go to Line…", () => Commands.execute("go.line"));
+        statusEls.position = seg.querySelector("span");
+        right.appendChild(seg);
       }
       right.appendChild(sbSegment(
         (Settings.get("editor.insertSpaces") ? "Spaces: " : "Tab Size: ") +
