@@ -163,3 +163,39 @@ def complete(language: str, code: str, line: int, col: int,
         return complete_cpp(code, line, col)
     return {"level": "lexical",
             "items": _lexical(code, _prefix_at(code, line, col), {})}
+
+
+def definition(language: str, code: str, line: int, col: int,
+               path: str = "") -> dict:
+    """Where the symbol at (1-based line, 0-based col) is defined.
+
+    Semantic for Python via jedi. Definitions inside the given buffer come
+    back as a jump target; definitions that live in installed modules are
+    named but not opened — the workspace only contains the user's files.
+    """
+    if language != "python":
+        return {"found": False,
+                "message": "definition lookup is semantic and exists for "
+                           "Python only"}
+    if not HAS_JEDI:
+        return {"found": False,
+                "message": "definition lookup needs jedi "
+                           "(pip install 'epsilon-math[ide]')"}
+    try:
+        script = jedi.Script(code, path=path or "main.py")
+        defs = script.goto(line, col, follow_imports=True)
+    except Exception as exc:     # noqa: BLE001 - jedi internal errors
+        return {"found": False, "message": f"lookup failed: {exc}"}
+    if not defs:
+        return {"found": False,
+                "message": "no definition found for the symbol under "
+                           "the cursor"}
+    d = defs[0]
+    in_buffer = d.module_path is None or str(d.module_path).endswith(
+        path or "main.py")
+    if in_buffer and d.line:
+        return {"found": True, "path": None, "line": d.line,
+                "col": (d.column or 0) + 1, "name": d.name}
+    return {"found": False,
+            "message": f"{d.name} is defined in {d.module_name} "
+                       "(an installed module, outside the workspace)"}

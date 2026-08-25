@@ -85,6 +85,9 @@ def test_web_build_drops_the_native_window_chrome():
     assert ".traffic" in (WEB / "web.css").read_text()
 
 
-def test_shared_markup_keeps_the_desktop_chrome():
-    """The native builds still need it, so it stays in the shared source."""
-    assert 'class="traffic"' in (STATIC / "index.html").read_text()
+def test_shared_markup_carries_the_workbench_frame():
+    """Both builds splice into the same skeleton; the anchors must hold."""
+    html = (STATIC / "index.html").read_text()
+    for anchor in ('id="workbench"', 'id="menubar"', 'id="editorArea"',
+                   'id="statusbar"', '<script src="app.js"></script>'):
+        assert anchor in html, f"index.html lost the {anchor} anchor"

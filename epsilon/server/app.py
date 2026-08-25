@@ -559,6 +559,7 @@ def create_app() -> FastAPI:
             "format": format_capabilities(),
             "completions": {"python": "semantic" if HAS_JEDI else "lexical",
                             "cpp": "lexical"},
+            "definitions": {"python": HAS_JEDI, "cpp": False},
             "git": gitwork.available(),
         }
 
@@ -566,6 +567,11 @@ def create_app() -> FastAPI:
     def complete_code(req: CompleteRequest) -> dict:
         from ..runtime.completion import complete
         return complete(req.language, req.code, req.line, req.col, req.path)
+
+    @app.post("/api/definition")
+    def find_definition(req: CompleteRequest) -> dict:
+        from ..runtime.completion import definition
+        return definition(req.language, req.code, req.line, req.col, req.path)
 
     @app.post("/api/format")
     def format_document(req: FormatRequest) -> dict:

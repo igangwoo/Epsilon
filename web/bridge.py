@@ -381,6 +381,7 @@ def ide_capabilities():
         "format": {"python": False, "cpp": False},  # process: server build
         "completions": {"python": "semantic" if HAS_JEDI else "lexical",
                         "cpp": "lexical"},
+        "definitions": {"python": HAS_JEDI, "cpp": False},
         "git": False,
     })
 
@@ -389,6 +390,12 @@ def complete(language, code, line, col, path=""):
     from epsilon.runtime.completion import complete as _complete
     return json.dumps(_complete(language, code, int(line), int(col),
                                 path or ""))
+
+
+def find_definition(language, code, line, col, path=""):
+    from epsilon.runtime.completion import definition
+    return json.dumps(definition(language, code, int(line), int(col),
+                                 path or ""))
 
 
 def search_files(files_json, query, regex=False, case=False, word=False):

@@ -45,6 +45,39 @@ def test_python_completion_of_module_members(client):
     assert "sqrt" in names and "pi" in names
 
 
+def test_go_to_definition_finds_a_symbol_in_the_buffer(client):
+    code = "def helper(x):\n    return x * 2\n\n\nprint(helper(21))\n"
+    r = client.post("/api/definition", json={
+        "language": "python", "code": code, "line": 5, "col": 8}).json()
+    assert r["found"] is True
+    assert r["line"] == 1
+    assert r["name"] == "helper"
+
+
+def test_a_definition_outside_the_workspace_is_named_not_faked(client):
+    """The workspace holds only the user's files; jumping into an installed
+    module would open nothing. Say where it lives instead."""
+    r = client.post("/api/definition", json={
+        "language": "python", "code": "import os\nos.path.join\n",
+        "line": 2, "col": 4}).json()
+    assert r["found"] is False
+    # it names the module the symbol really lives in, not a guess
+    assert "os" in r["message"] and "outside the workspace" in r["message"]
+
+
+def test_definition_refuses_languages_with_no_language_service(client):
+    r = client.post("/api/definition", json={
+        "language": "cpp", "code": "int main(){}", "line": 1, "col": 5}).json()
+    assert r["found"] is False
+    assert "Python" in r["message"]
+
+
+def test_capabilities_state_whether_definitions_are_semantic(client):
+    caps = client.get("/api/capabilities").json()
+    assert isinstance(caps["definitions"]["python"], bool)
+    assert caps["definitions"]["cpp"] is False
+
+
 def test_cpp_std_completion(client):
     r = client.post("/api/complete", json={
         "language": "cpp", "code": "int main(){ std::v", "line": 1,

@@ -1,5 +1,11 @@
 # Epsilon (엡실론)
 
+> **지금의 Epsilon은 브라우저에서 동작하는 Python / C++ 프로그래밍 IDE입니다.**
+> 에디터·터미널·디버거·검색·Git·설정·단축키까지 갖춘 IDE 기반을 먼저 완성하는
+> 단계로, 수학 서브시스템(커널·CAS·증명 탐색기)은 삭제되지 않고
+> `epsilon/server/static/math/` 아래에 보존되어 있으며, IDE가 완성된 뒤
+> 문맥 인식 도구로 다시 돌아옵니다.
+
 **수학을 하나의 언어로 — 작성하고, 타입 검사하고, 증명하고, 계산하고, 시각화하고, 내보내는 통합 수학 컴퓨팅 환경.**
 
 Epsilon is a mathematics-first language and environment. You write mathematics

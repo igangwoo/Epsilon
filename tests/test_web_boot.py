@@ -1,4 +1,4 @@
-"""The browser build must boot, including for people who have used it before.
+"""The browser build must boot — and hold up as a daily programming tool.
 
 index.html and the scripts it references are separate files with separate
 cache lifetimes. A returning visitor can hold an older index.html together
@@ -7,8 +7,9 @@ works for a new visitor and is dead for everyone else — which is exactly what
 happened when `vfs.js` was split out.
 
 These tests run the real `web/` build in a headless browser, with CPython
-standing in for Pyodide, against an index.html stripped of every optional
-script tag. Skipped where node, Playwright or Chromium are unavailable.
+standing in for Pyodide, against the workbench UI: boot, edit, save, run,
+palette, and the reload-and-continue guarantee. Skipped where node,
+Playwright or Chromium are unavailable.
 """
 
 import json
@@ -70,12 +71,12 @@ def _free_port():
         return s.getsockname()[1]
 
 
-def _make_server(directory, port, check_delay=0.0):
+def _make_server(directory, port, slow_on="", slow_delay=0.0):
     """Serve `directory`, and run its Python through this interpreter.
 
-    `check_delay` makes /api/check slow the way the real Pyodide build is on
-    a first run, which is what opens the window between the IDE appearing and
-    its first result arriving.
+    `slow_on` delays bridge calls containing that substring, the way the
+    real Pyodide build is slow on a first run — which is what opens the
+    window between the IDE appearing and its first data arriving.
     """
     import ast
     import types
@@ -94,9 +95,9 @@ def _make_server(directory, port, check_delay=0.0):
     ns = {"__name__": "__main__"}
 
     def run_code(code):
-        if check_delay and "bridge.check" in code:
+        if slow_on and slow_on in code:
             import time
-            time.sleep(check_delay)
+            time.sleep(slow_delay)
         if "await " in code:             # runPythonAsync takes top-level await
             import asyncio
             body = "\n".join("    " + line for line in code.splitlines())
@@ -144,6 +145,21 @@ def _make_server(directory, port, check_delay=0.0):
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 
+PROBE = """({
+    bootGone: !document.querySelector('#boot'),
+    bootError: (document.querySelector('.boot-error') || {}).textContent || '',
+    panes: document.querySelectorAll('.pane[data-leaf]').length,
+    files: document.querySelectorAll('#explorerList .wb-file').length,
+    tabs: Array.from(document.querySelectorAll('.pane-tab'))
+      .map((t) => t.textContent),
+    statusbar: (document.querySelector('#statusbar') || {}).textContent || '',
+    output: (document.querySelector('#panelOutput') || {}).textContent || '',
+    value: (document.querySelector('.ed-input') || {}).value || '',
+    title: document.title,
+    paletteOpen: !!document.querySelector('#paletteOverlay:not(.hidden)'),
+    paletteItems: document.querySelectorAll('.wb-pal-item').length,
+  })"""
+
 DRIVER = """
 const {{ chromium }} = require({playwright!r});
 const STUB = {stub};
@@ -157,22 +173,19 @@ const STUB = {stub};
   await pg.goto('http://127.0.0.1:{port}/index.html', {{ waitUntil: 'domcontentloaded' }});
   {script}
   await pg.waitForTimeout({wait});
-  const out = await pg.evaluate(`({{
-    bootGone: !document.querySelector('#boot'),
-    bootError: (document.querySelector('.boot-error') || {{}}).textContent || '',
-    panes: document.querySelectorAll('.pane[data-leaf]').length,
-    files: document.querySelectorAll('#fileList .file-item').length,
-    check: (document.querySelector('#checkState') || {{}}).textContent || '',
-    theorems: document.querySelectorAll('#thmList .thm-item').length,
-  }})`);
+  const out = await pg.evaluate(`{probe}`);
   out.errors = errs;
   await b.close();
   console.log(JSON.stringify(out));
 }})();
 """
 
+READY = ("await pg.waitForFunction(\"window.EpsilonIDE && "
+         "document.querySelector('.pane-tab')\", null, { timeout: 60000 });\n")
 
-def boot_site(tmp_path, index_html=None, wait=30000, script="", check_delay=0.0):
+
+def boot_site(tmp_path, index_html=None, wait=4000, script="",
+              slow_on="", slow_delay=0.0):
     """Serve a copy of `web/` (optionally with a doctored index.html) and boot it."""
     site = tmp_path / "site"
     shutil.copytree(WEB, site)
@@ -180,14 +193,15 @@ def boot_site(tmp_path, index_html=None, wait=30000, script="", check_delay=0.0)
         (site / "index.html").write_text(index_html)
 
     port = _free_port()
-    server = _make_server(site, port, check_delay=check_delay)
+    server = _make_server(site, port, slow_on=slow_on, slow_delay=slow_delay)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
         driver = tmp_path / "drive.cjs"
         driver.write_text(DRIVER.format(playwright=str(PLAYWRIGHT),
                                         stub=json.dumps(PYODIDE_STUB),
-                                        port=port, wait=wait, script=script))
+                                        port=port, wait=wait, script=script,
+                                        probe=PROBE))
         r = subprocess.run([NODE, str(driver)], capture_output=True, text=True,
                            timeout=180)
         assert r.returncode == 0, r.stderr
@@ -198,15 +212,19 @@ def boot_site(tmp_path, index_html=None, wait=30000, script="", check_delay=0.0)
 
 # --------------------------------------------------------------------------
 
+
 def test_the_site_boots(tmp_path):
-    out = boot_site(tmp_path)
+    out = boot_site(tmp_path, script=READY)
     assert out["errors"] == [], out["errors"]
     assert out["bootError"] == ""
     assert out["bootGone"], "the boot overlay never cleared"
     assert out["panes"] >= 1
-    assert out["files"] >= 1
-    assert out["check"].startswith("✓")
-    assert out["theorems"] >= 1
+    assert out["files"] >= 1, "the explorer lists nothing"
+    assert any("main.py" in t for t in out["tabs"]), (
+        f"main.py did not open on first visit: {out['tabs']}")
+    assert "main.py" in out["title"]
+    assert "browser" in out["statusbar"], (
+        "the status bar does not state the build's capabilities")
 
 
 def test_it_boots_with_a_cached_index_from_an_earlier_build(tmp_path):
@@ -217,16 +235,18 @@ def test_it_boots_with_a_cached_index_from_an_earlier_build(tmp_path):
     needs itself rather than trusting the page's tags.
     """
     html = (WEB / "index.html").read_text()
-    html = re.sub(r'[ \t]*<script src="(vfs|panes)\.js[^"]*"></script>\n', "", html)
+    html = re.sub(
+        r'[ \t]*<script src="(vfs|panes|core|editor)\.js[^"]*"></script>\n',
+        "", html)
     html = re.sub(r"\?v=[0-9a-f]+", "", html)
     tags = re.findall(r'<script src="([^"]+)"', html)
     assert tags == ["boot.js"], f"expected only boot.js to be loaded, got {tags}"
 
-    out = boot_site(tmp_path, index_html=html)
+    out = boot_site(tmp_path, index_html=html, script=READY)
     assert out["errors"] == [], out["errors"]
     assert out["bootGone"], "an older cached index.html left the page dead"
     assert out["panes"] >= 1
-    assert out["check"].startswith("✓")
+    assert any("main.py" in t for t in out["tabs"])
 
 
 def test_a_missing_asset_is_reported_on_the_page(tmp_path):
@@ -241,7 +261,8 @@ def test_a_missing_asset_is_reported_on_the_page(tmp_path):
         driver = tmp_path / "drive.cjs"
         driver.write_text(DRIVER.format(playwright=str(PLAYWRIGHT),
                                         stub=json.dumps(PYODIDE_STUB),
-                                        port=port, wait=8000, script=""))
+                                        port=port, wait=8000, script="",
+                                        probe=PROBE))
         r = subprocess.run([NODE, str(driver)], capture_output=True, text=True,
                            timeout=120)
         assert r.returncode == 0, r.stderr
@@ -252,26 +273,60 @@ def test_a_missing_asset_is_reported_on_the_page(tmp_path):
     assert "vfs.js" in out["bootError"]
 
 
-def test_interacting_while_the_first_check_is_still_running(tmp_path):
-    """The failure a user hits on a slow first run.
-
-    Pyodide takes seconds to produce a first result, so the IDE is on screen
-    and interactive well before any of it arrives. Anything drawn in that
-    window has to cope with there being nothing to draw yet — the dependency
-    graph did not, because its `links` are derived from a check and drawing
-    happens on every pane change, tab switch and theme toggle.
-    """
-    script = """
-  // wait for the IDE, then do what a user does while the check is in flight
-  await pg.waitForFunction("window.EpsilonPanes && document.querySelector('.pane-tab')",
-                           null, { timeout: 60000 });
-  await pg.evaluate("EpsilonPanes.openView('deps')");
-  await pg.evaluate("EpsilonPanes.splitPane('row')");
-  await pg.evaluate("document.querySelector('#themeBtn').click()");
-  await pg.evaluate("EpsilonPanes.applyProfile('research')");
-  await pg.waitForTimeout(1500);
+def test_edit_save_run_and_reload_continues_where_you_left_off(tmp_path):
+    """The definition of done, as far as the browser build honestly goes:
+    edit → save → run → see output → reload → continue exactly there."""
+    script = READY + """
+  // edit: type a comment at the top of main.py
+  await pg.click('.ed-input');
+  await pg.keyboard.press('Control+Home');
+  await pg.keyboard.type('# edited in the E2E test');
+  await pg.keyboard.press('Enter');
+  await pg.waitForFunction("document.title.includes('\\u25cf')",
+                           null, { timeout: 5000 });   // dirty dot
+  // save
+  await pg.keyboard.press('Control+s');
+  await pg.waitForFunction("!document.title.includes('\\u25cf')",
+                           null, { timeout: 5000 });
+  // run from the Run button; output lands in the panel
+  await pg.click('.wb-run-btn');
+  await pg.waitForFunction(
+    "(document.querySelector('#panelOutput')||{textContent:''}).textContent.includes('sinc(')",
+    null, { timeout: 30000 });
+  // the command palette answers the keyboard
+  await pg.keyboard.press('Control+Shift+P');
+  await pg.waitForFunction(
+    "!document.querySelector('#paletteOverlay').classList.contains('hidden')",
+    null, { timeout: 5000 });
+  await pg.keyboard.type('Toggle Panel');
+  await pg.waitForTimeout(300);
+  // reload: the session must come back, not reset
+  await pg.reload({ waitUntil: 'domcontentloaded' });
+""" + READY + """
+  await pg.waitForTimeout(800);
 """
-    out = boot_site(tmp_path, script=script, check_delay=6.0, wait=30000)
+    out = boot_site(tmp_path, script=script, wait=1500)
+    assert out["errors"] == [], out["errors"]
+    assert any("main.py" in t for t in out["tabs"]), (
+        f"the open editor was forgotten across a reload: {out['tabs']}")
+    assert "# edited in the E2E test" in out["value"], (
+        "the saved edit did not survive the reload")
+
+
+def test_interacting_before_capabilities_arrive(tmp_path):
+    """Pyodide takes seconds on a first run, so the IDE is on screen and
+    interactive before it knows what this build can do. Clicking around in
+    that window must degrade to honest reasons, never exceptions."""
+    script = READY + """
+  await pg.keyboard.press('Control+Shift+P');       // palette
+  await pg.keyboard.press('Escape');
+  await pg.keyboard.press('Control+b');             // toggle sidebar
+  await pg.keyboard.press('Control+b');
+  await pg.click('.wb-run-btn');                    // run before caps: a reason, not a crash
+  await pg.waitForTimeout(1200);
+"""
+    out = boot_site(tmp_path, script=script, wait=2000,
+                    slow_on="ide_capabilities", slow_delay=5.0)
     assert out["errors"] == [], out["errors"]
     assert out["bootError"] == "", out["bootError"]
     assert out["panes"] >= 1
@@ -280,14 +335,78 @@ def test_interacting_while_the_first_check_is_still_running(tmp_path):
 def test_a_runtime_error_is_not_reported_as_a_startup_failure(tmp_path):
     """Calling a failure in a working IDE a startup failure sends the reader
     looking in the wrong place; the report also has to say where it happened."""
-    script = """
-  await pg.waitForFunction("window.EpsilonPanes && document.querySelector('.pane-tab')",
-                           null, { timeout: 60000 });
-  await pg.waitForTimeout(2000);
+    script = READY + """
+  await pg.waitForTimeout(1000);
   await pg.evaluate("setTimeout(() => { window.__nope.forEach(() => {}); }, 0)");
   await pg.waitForTimeout(1200);
 """
-    out = boot_site(tmp_path, script=script, wait=6000)
+    out = boot_site(tmp_path, script=script, wait=3000)
     assert "Something went wrong" in out["bootError"], out["bootError"]
     assert "Could not start Epsilon" not in out["bootError"]
     assert "Dismiss" in out["bootError"]
+
+def test_the_whole_workbench_state_survives_a_reload(tmp_path):
+    """Reloading the browser must not make the IDE feel reset: settings,
+    a rebound key, the sidebar view, the panel tab and the layout all come
+    back."""
+    script = READY + """
+  await pg.evaluate(`(() => {
+    EpsilonIDE.settings.set('editor.fontSize', 17);
+    EpsilonIDE.settings.set('workbench.theme', 'light');
+    EpsilonIDE.keys.setUser('view.problems', 'Ctrl+Alt+P');
+    EpsilonIDE.commands.execute('view.scm');
+    EpsilonIDE.commands.execute('view.output');
+    EpsilonIDE.commands.execute('view.splitRight');
+  })()`);
+  await pg.waitForTimeout(600);
+  await pg.reload({ waitUntil: 'domcontentloaded' });
+""" + READY + """
+  await pg.waitForTimeout(800);
+"""
+    probe = """({
+      fontSize: EpsilonIDE.settings.get('editor.fontSize'),
+      theme: document.documentElement.dataset.theme,
+      chord: EpsilonIDE.keys.chordOf('view.problems'),
+      sidebar: (document.querySelector('#sidebarTitle')||{}).textContent,
+      panelTab: (document.querySelector('.wb-panel-tab.active')||{}).textContent,
+      panes: document.querySelectorAll('.pane[data-leaf]').length,
+    })"""
+    global PROBE
+    saved, PROBE = PROBE, probe
+    try:
+        out = boot_site(tmp_path, script=script, wait=1200)
+    finally:
+        PROBE = saved
+    assert out["fontSize"] == 17, "a settings change did not survive"
+    assert out["theme"] == "light", "the theme reset itself"
+    assert out["chord"] == "Ctrl+Alt+P", "a rebound key was forgotten"
+    assert "SOURCE CONTROL" in out["sidebar"], out["sidebar"]
+    assert "OUTPUT" in out["panelTab"].upper(), out["panelTab"]
+    assert out["panes"] >= 2, "the editor split was forgotten"
+
+def test_the_menu_bar_is_usable_without_a_mouse(tmp_path):
+    """Keyboard-only paths are not optional: Alt-free arrow navigation
+    walks the bar, opens a menu, and runs an item."""
+    script = READY + """
+  await pg.evaluate("document.querySelector('#menubar .wb-menu-btn').focus()");
+  await pg.keyboard.press('ArrowRight');           // File -> Edit
+  await pg.keyboard.press('ArrowDown');            // opens, enters the menu
+  await pg.waitForTimeout(200);
+  await pg.keyboard.press('ArrowDown');
+  await pg.waitForTimeout(200);
+"""
+    probe = """({
+      open: !!document.querySelector('#menuDrop'),
+      focusedItem: (document.activeElement.className || ''),
+      focusedText: (document.activeElement.textContent || '').slice(0, 40),
+    })"""
+    global PROBE
+    saved, PROBE = PROBE, probe
+    try:
+        out = boot_site(tmp_path, script=script, wait=600)
+    finally:
+        PROBE = saved
+    assert out["open"], "arrow keys did not open a menu"
+    assert "wb-menu-item" in out["focusedItem"], (
+        f"focus never entered the dropdown: {out}")
+

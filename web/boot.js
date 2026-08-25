@@ -13,7 +13,7 @@
   const WHEEL = "./epsilon_math-0.1.0-py3-none-any.whl";
   //!BUILD_ID — stamped by scripts/build_web.py from the asset contents,
   // so a fresh page can never pick up a stale cached script
-  const BUILD_ID = "ec8ee5ed13b5";
+  const BUILD_ID = "f4067b9f84f9";
   const CACHE_BUST = "?v=" + BUILD_ID;
 
   const realFetch = window.fetch.bind(window);
@@ -27,29 +27,28 @@
   }
   function detail(msg) { if (bootDetail) bootDetail.textContent = msg; }
 
-  const WELCOME = `-- Welcome to Epsilon — running entirely in your browser.
--- No install, no server. Press ▶ Check (or Ctrl/Cmd+Enter) to verify.
+  const WELCOME = `"""Welcome to Epsilon — a programming IDE that runs in your browser.
 
-/-- The sinc function, f(x) = sin(x)/x. -/
-def f (x : Real) : Real := Real.sin(x) / x
+Python executes right here through Pyodide; no install, no server.
+Press the Run button (or F5) to run this file.
 
-/-- Addition on the naturals is commutative — proved by induction,
-    checked by the trusted kernel: this is Formally Proven. -/
-theorem add_comm (a b : Nat) : a + b = b + a := by
-  induction b with
-  | zero => rw [Nat.add_zero, Nat.zero_add]
-  | succ n ih => rw [Nat.add_succ, Nat.succ_add, ih]
+The browser build is honest about its limits: a real shell, C++
+compilation, the step debugger and git need the local server build
+(pip install epsilon-math, then \`epsilon ide\`).
+"""
 
-/-- The CAS computes lim_{x->0} sin(x)/x = 1. It is marked Symbolically
-    Verified, never Formally Proven — Epsilon never conflates the two. -/
-theorem sinc_limit : HasLimitAt(f, 0, 1) := by cas
+import math
 
-theorem two_le_three : 2 ≤ 3 := by decide
 
-#check f
-#eval 2 + 3 * 4
+def sinc(x: float) -> float:
+    """sin(x)/x, with the removable singularity filled in."""
+    return math.sin(x) / x if x else 1.0
 
-plot Real.sin, x ∈ [-6, 6]
+
+for i in range(7):
+    x = i * 0.5
+    bar = "#" * round(40 * abs(sinc(x)))
+    print(f"sinc({x:3.1f}) {bar}")
 `;
 
   /* -------- the workspace (vfs.js) --------
@@ -110,6 +109,16 @@ plot Real.sin, x ∈ [-6, 6]
       PY.globals.set("_pth", body.path || "");
       return jsonResponse(JSON.parse(PY.runPython(
         "import bridge; bridge.complete(_lang, _code, _ln, _col, _pth)")));
+    }
+
+    if (path === "/api/definition") {
+      PY.globals.set("_lang", body.language || "");
+      PY.globals.set("_code", body.code || "");
+      PY.globals.set("_ln", body.line || 1);
+      PY.globals.set("_col", body.col || 0);
+      PY.globals.set("_pth", body.path || "");
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.find_definition(_lang, _code, _ln, _col, _pth)")));
     }
 
     if (path === "/api/format") {
@@ -282,40 +291,18 @@ plot Real.sin, x ∈ [-6, 6]
    * builds; `web.css` holds the matching styling.
    * ----------------------------------------------------------------- */
   function applyWebChrome() {
-    const left = document.querySelector(".titlebar .title-left");
-    const center = document.querySelector(".titlebar .title-center");
-    const right = document.querySelector(".titlebar .title-right");
-    if (!left || !right) return;
-
-    const traffic = left.querySelector(".traffic");
-    if (traffic) traffic.remove();
-
-    if (!left.querySelector(".wordmark")) {
-      const wm = document.createElement("span");
-      wm.className = "wordmark";
-      wm.innerHTML = '<span class="mark" aria-hidden="true">\u03b5</span>' +
-                     '<span class="name">Epsilon</span>';
-      left.insertBefore(wm, left.firstChild);
-    }
-
-    // the version chip rides with the wordmark once the brand moves left
-    const sub = document.getElementById("metaVersion");
-    if (sub && sub.parentNode !== left) left.appendChild(sub);
-    const brand = center && center.querySelector(".brand");
-    if (brand) brand.remove();
-
-    if (!right.querySelector(".repo-link")) {
-      const a = document.createElement("a");
-      a.className = "repo-link";
-      a.href = "https://github.com/igangwoo/Epsilon";
-      a.target = "_blank";
-      a.rel = "noopener noreferrer";
-      a.title = "Source on GitHub";
-      a.setAttribute("aria-label", "Source on GitHub");
-      a.innerHTML = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">' +
-        '<path d="M8 0a8 8 0 00-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.83-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.52.56.83 1.28.83 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 008 0z"/></svg>';
-      right.appendChild(a);
-    }
+    const bar = document.getElementById("titlebar");
+    if (!bar || bar.querySelector(".repo-link")) return;
+    const a = document.createElement("a");
+    a.className = "repo-link";
+    a.href = "https://github.com/igangwoo/Epsilon";
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.title = "Source on GitHub";
+    a.setAttribute("aria-label", "Source on GitHub");
+    a.innerHTML = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor">' +
+      '<path d="M8 0a8 8 0 00-2.53 15.59c.4.07.55-.17.55-.38l-.01-1.34c-2.23.48-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.88.87 2.34.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.83-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 014 0c1.53-1.03 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.52.56.83 1.28.83 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8 8 0 008 0z"/></svg>';
+    bar.appendChild(a);
   }
 
   /**
@@ -430,6 +417,8 @@ plot Real.sin, x ∈ [-6, 6]
       await ensureScript("./vfs.js", "EpsilonVFS");
       VFS = EpsilonVFS.create(window.localStorage, WELCOME);
       FILES = VFS.contents();
+      await ensureScript("./core.js", "EpsilonCore");
+      await ensureScript("./editor.js", "EpsilonEditor");
       await ensureScript("./panes.js", "EpsilonPanes");
     } catch (err) {
       fail(err);

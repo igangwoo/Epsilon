@@ -252,29 +252,110 @@ GET  /api/definition?name=     -> {"location": {"name","module","span"} | null,
 GET  /api/meta                 -> {"version","language_version","brand"}
 ```
 
+## IDE services API (the programming-IDE phase)
+
+All code-executing or workspace-mutating endpoints are guarded by
+`_require_same_origin`: a request whose Origin header names another site is
+refused with 403, so a drive-by page cannot reach a local server through the
+browser. Same-origin pages and non-browser clients (no Origin header) pass.
+
+```
+GET  /api/capabilities -> {"run": {python, cpp}, "terminal": bool,
+                           "debug": {python, cpp}, "format": {python, cpp},
+                           "completions": {python: "semantic"|"lexical",
+                                           cpp: "lexical"},
+                           "definitions": {python: bool, cpp: false},
+                           "git": bool}
+   (the truth about THIS machine; the UI disables what is absent and says
+    why. The browser build's bridge returns its own, smaller truth.)
+
+POST /api/complete {language, code, line, col, path?}
+   -> {"level": "semantic"|"lexical", "items": [{name, kind, detail, insert}]}
+   (line is 1-based, col 0-based - jedi's convention. Python is semantic
+    when jedi is installed; C++ is lexical: keywords, curated std::, buffer
+    identifiers. The reply's `level` says which produced it.)
+POST /api/definition {language, code, line, col, path?}
+   -> {"found": bool, "path"?, "line"?, "col"?, "message"?}
+   (Python via jedi goto. A definition in an installed module is named,
+    not opened - the workspace holds only the user's files.)
+POST /api/format {language, code} -> {"ok", "code"} | {"ok": false, "message"}
+   (black / clang-format CLIs; absence is a refusal naming the tool)
+POST /api/search {query, regex?, case?, word?}
+   -> {"results": [{path, line, col, length, preview}], "files", "truncated"}
+POST /api/replace {query, replacement, regex?, case?, word?, paths?}
+   -> {"ok", "replacements", "files": {path: count}}
+
+POST   /api/terminal            -> {"id", "title"}       (a real PTY + bash)
+GET    /api/terminal/{id}?since -> {"data", "cursor", "alive", "exit_code"}
+POST   /api/terminal/{id}/input {data} / .../resize {rows, cols}
+DELETE /api/terminal/{id}
+
+POST   /api/debug {code, filename?, breakpoints: [line]} -> {"id"}
+GET    /api/debug/{id}?since    -> {"events": [...], "cursor"}
+   (events: stopped{reason,line,stack,locals}, output{stream,data},
+    eval{ok,value}, exited{code} - a bdb child process, JSON-lines protocol)
+POST   /api/debug/{id}/cmd {op: continue|step|next|return|setbp|eval, ...}
+DELETE /api/debug/{id}
+
+GET/POST /api/git/{status,init,stage,unstage,discard,commit,diff,log,
+                   branches,checkout}
+   (status -> {"ok", "repo", "branch", "changes": [{path, staged, unstaged,
+    status}]}; commit refuses an empty message)
+```
+
+Runs execute with `python -I` in a subprocess: the server's own modules and
+a caller's PYTHONPATH are not importable from user code; installed packages
+are, by design.
+
 ## Web IDE - `epsilon/server/static/`
 
-Files: `index.html`, `app.css`, `app.js`, `panes.js` (NO external CDNs;
-self-contained). Talks only to the REST API above. VS Code-like layout with
-Apple glass (translucent, blurred) styling. Details in the frontend task brief.
+Files: `index.html`, `app.css`, `app.js`, `core.js`, `editor.js`, `panes.js`
+(NO external CDNs; self-contained). Talks only to the REST API above. The
+current UI is a general-purpose programming workbench for Python and C++;
+the mathematics workbench is preserved, not deleted, under `static/math/`
+(`legacy-workbench.js`, `legacy-index.html`, `legacy-app.css`, `README.md`)
+and returns as context-aware tooling in a later phase.
 
-`panes.js` owns the workspace layout - a binary split tree of tabbed panes.
-Views are the *existing* DOM elements, re-parented into panes rather than
-re-created, so every `$("#thmList")`-style lookup in `app.js` keeps working.
-Elements not currently placed in a pane are parked in `#viewVault` (hidden)
-so they stay in the document and remain queryable.
+`core.js` holds the registries every surface reads - one registration
+serves the menu bar, command palette, keybindings, buttons and context
+menus alike (`EpsilonCore = {Settings, Commands, Keys, Menus, ContextMenus,
+Diagnostics, fuzzy}`). A command carries `whyDisabled()`; every surface
+shows the reason instead of a dead control. User keybindings shadow
+defaults and persist; settings are typed, validated, persisted, observable.
+
+`editor.js` is the code editor (`EpsilonEditor.CodeEditor`): a native
+textarea for input/IME/undo/a11y with a highlight layer behind it, the
+textarea being the one real scroller (gutter and highlight follow by
+transform). Pure editing operations live in `EpsilonEditor.EditorOps` and
+are node-tested. The caret is drawn, so cursor style/blink settings work;
+soft-wrap falls back to the native caret.
+
+`panes.js` owns the editor groups - a binary split tree of tabbed panes.
+Views are *existing* DOM elements, re-parented rather than re-created;
+elements not currently placed are parked in `#viewVault` (hidden) so they
+stay queryable.
 
 ```js
-EpsilonPanes.init({host, vault, views: [{id, title, icon, element, onShow,
-                                         closable}], onChange})
-EpsilonPanes.openView(id) / closeView(id) / isOpen(id)
+EpsilonPanes.init({host, vault, profile, views?, onChange, onTabContext})
+EpsilonPanes.openView(id) / closeView(id) / isOpen(id) / activeView()
+EpsilonPanes.closeOthers(id) / closeToTheRight(id) / joinAll()
+EpsilonPanes.isPinned(id) / togglePin(id)      // pins survive close-others
+EpsilonPanes.setDirty(id, bool) / renameView(old, new, title?)
 EpsilonPanes.splitPane("row"|"col", viewId?) / toggleMaximize(leafId?)
 EpsilonPanes.moveView(viewId, targetLeafId, zone)   // zone: tab|left|right|up|down
 EpsilonPanes.setBadge(id, text, tone)               // tone: "err"|"warn"|""
 EpsilonPanes.applyProfile(name) / profileNames() / reset()
+EpsilonPanes.restoreLayout()   // re-apply the saved tree once views exist
 ```
 Layouts persist in `localStorage["epsilon.workspace.v1"]`. A saved layout or
 profile naming a view that is not registered is pruned, never rendered blank.
+
+`app.js` is the workbench: menu bar, command palette/quick open, activity
+bar + explorer/search/source-control/run-and-debug sidebars, unified bottom
+panel (Terminal | Problems | Output | Debug Console), clickable status bar,
+settings and keyboard-shortcuts editors as tabs, theme tokens
+(dark/light/high-contrast), and workspace persistence - open tabs, active
+file, layout, sidebar, panel, and settings all survive a reload.
 
 ## Browser build - `web/`
 
@@ -292,8 +373,9 @@ Two rules keep the deploy from breaking for returning visitors, whose cached
 
 * every asset URL carries `?v=<build id>`, a hash over the assets, so a
   cached script can never pair with a differently-built page;
-* `boot.js` loads `vfs.js`, `panes.js` and `app.js` itself rather than
-  trusting the page's `<script>` tags, so any cached HTML still boots.
+* `boot.js` loads `vfs.js`, `core.js`, `editor.js`, `panes.js` and
+  `app.js` itself rather than trusting the page's `<script>` tags, so
+  any cached HTML still boots.
 
 `tests/test_web_boot.py` runs the built site in a headless browser (CPython
 standing in for Pyodide) against an index.html stripped back to `boot.js`
@@ -303,7 +385,7 @@ leaving it dead.
 Pyodide takes seconds to produce a first result, so **the IDE is on screen
 and interactive well before any of it arrives**. Anything the IDE draws must
 therefore cope with there being nothing to draw yet - the same test suite
-makes /api/check slow and interacts during that window.
+delays the first capability probe and interacts during that window.
 
 `web/vfs.js` is the browser workspace: the file/folder/rename/duplicate half
 of the API above, against a `{path: content}` map in localStorage, with the

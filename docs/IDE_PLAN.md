@@ -1,5 +1,16 @@
 # Epsilon IDE — feature and implementation plan
 
+> **Current phase (IDE-first pivot).** Mathematics is temporarily removed
+> from the visible IDE experience while the core programming-IDE
+> infrastructure is completed: editor, workspace, Python/C++ execution,
+> terminal, diagnostics, search, completion, run/debug, persistence and
+> git workflows. Nothing mathematical was deleted — the engine, its API and
+> the old workbench live on (`epsilon/server/static/math/`,
+> `docs/CONTRACTS.md` §Web IDE) and return later as context-aware tools
+> inside the finished IDE, not as a separate mode. Until then, no new
+> mathematics UI is added.
+
+
 The product goal is one environment that carries a piece of work along the
 whole chain:
 

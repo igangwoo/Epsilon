@@ -1,9 +1,22 @@
 /* ===================================================================
- * Epsilon Web IDE — vanilla JS front-end.
- * Talks only to the REST API in docs/CONTRACTS.md. No external deps.
+ * Epsilon — the workbench.
+ *
+ * A general-purpose programming IDE for Python and C++ that runs in the
+ * browser. Everything routes through the core registries (core.js): one
+ * command registration serves the palette, the menu bar, the keyboard,
+ * the buttons and the context menus, and a command that cannot run here
+ * always says why.
+ *
+ * The mathematics workbench is preserved, isolated, in ./math/ — the
+ * engine behind it stays live and tested; its UI returns later as
+ * context-aware tools inside this programming workflow.
  * =================================================================== */
 (function () {
   "use strict";
+
+  const { Settings, Commands, Keys, Menus, ContextMenus, Diagnostics,
+          fuzzy, isMac } = EpsilonCore;
+  const { CodeEditor } = EpsilonEditor;
 
   /* ---------------- tiny helpers ---------------- */
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -14,11 +27,8 @@
     if (txt != null) e.textContent = txt;
     return e;
   };
-  const esc = (s) =>
-    String(s).replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
-  const isMac = navigator.platform.toUpperCase().includes("MAC");
-
-  /* localStorage that never throws: a private window simply forgets */
+  const esc = (s) => String(s).replace(/[&<>]/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const readJSON = (key, fallback) => {
     try {
       const raw = localStorage.getItem(key);
@@ -39,416 +49,53 @@
     try {
       res = await fetch(path, opts);
     } catch (e) {
-      toast("Network error: " + e.message, "err");
+      notify(String(e.message || e), "err");
       throw e;
     }
     const ct = res.headers.get("content-type") || "";
     const data = ct.includes("json") ? await res.json() : await res.text();
     if (!res.ok && data && typeof data === "object") {
-      // a refused request (a name collision, a path outside the workspace)
-      // used to fail silently; say what happened and let callers see it
       if (!("ok" in data)) data.ok = false;
-      toast(data.detail || `Request failed (${res.status})`, "err");
+      if (!data._quiet && res.status !== 501) {
+        notify(data.detail || data.message || `Request failed (${res.status})`,
+               "err");
+      }
     }
     return data;
   }
 
-  /* ---------------- state ---------------- */
-  const state = {
-    tabs: [], // {path, content, saved, dirty}
-    active: null, // path
-    lastCheck: null,
-    selectedTheorem: null,
-    meta: {},
-  };
-
-  /* ---------------- toasts ---------------- */
-  function toast(msg, kind) {
+  /* ---------------- notifications ---------------- */
+  function notify(message, tone, actions) {
     const stack = $("#toastStack");
-    const t = el("div", "toast " + (kind || ""), msg);
-    stack.appendChild(t);
-    setTimeout(() => {
-      t.style.opacity = "0";
-      setTimeout(() => t.remove(), 200);
-    }, 2600);
+    if (!stack) return;
+    const box = el("div", "toast " + (tone || "info"));
+    box.setAttribute("role", tone === "err" ? "alert" : "status");
+    box.appendChild(el("span", "toast-msg", message));
+    (actions || []).forEach((a) => {
+      const b = el("button", "toast-act", a.label);
+      b.onclick = () => { box.remove(); a.run(); };
+      box.appendChild(b);
+    });
+    const close = el("button", "toast-x", "×");
+    close.setAttribute("aria-label", "Dismiss");
+    close.onclick = () => box.remove();
+    box.appendChild(close);
+    stack.appendChild(box);
+    if (!actions) setTimeout(() => box.remove(), tone === "err" ? 9000 : 4500);
   }
 
-  /* ===================================================================
-   * Syntax highlighting
-   *
-   * One tokenizer, driven by a per-language table. Epsilon is the language
-   * this IDE is for, but a workspace holds the Python and C++ that the same
-   * piece of work turns into, plus the notes and data around it — so those
-   * open as themselves rather than as mis-parsed Epsilon.
-   * =================================================================== */
-  const KEYWORDS = new Set(("def define theorem lemma proposition corollary " +
-    "example axiom constant inductive structure where import namespace end " +
-    "open by fun forall exists in with notation infixl infixr prefix postfix " +
-    "plot calc if then else sorry match").split(" "));
-  const TACTICS = new Set(("intro intros exact apply assumption rfl symm " +
-    "constructor split left right exists cases induction rw rewrite simp " +
-    "unfold decide norm_num have show calc trivial contradiction exfalso " +
-    "cas numeric ring linarith sorry clear auto").split(" "));
-
-  const words = (s) => new Set(s.split(" "));
-
-  const SYNTAX = {
-    epsilon: {
-      line: ["--"], block: [["/-", "-/"]], nested: true,
-      strings: ['"'], directive: "#",
-      keywords: KEYWORDS, secondary: TACTICS,
-      identStart: /[A-Za-z_\u2115\u2124\u211a\u211d\u2102\u03c0]/,
-      identBody: /[A-Za-z0-9_'.\u2115\u2124\u211a\u211d\u2102\u03c0]/,
-      isType: (w) => /^[A-Z\u2115\u2124\u211a\u211d\u2102]/.test(w)
-        || /^[\u2115\u2124\u211a\u211d\u2102]/.test(w.split(".").pop()),
-      ops: "\u2200\u2203\u03bb\u2192\u2194\u2227\u2228\u00ac\u2264\u2265\u2260\u2208\u2209\u2286\u00d7\u221a\u00b7\u2218+-*/^=<>|",
-    },
-    python: {
-      line: ["#"], block: [['"""', '"""'], [", "]],
-      strings: ['"', "'"],
-      keywords: words("def class return if elif else for while break continue " +
-        "import from as pass raise try except finally with lambda yield " +
-        "global nonlocal assert del in is not and or None True False await async"),
-      secondary: words("print len range int float str list dict set tuple bool " +
-        "sum min max abs round sorted enumerate zip map filter open isinstance " +
-        "type super self __init__"),
-      isType: (w) => /^[A-Z]/.test(w),
-      ops: "+-*/%^=<>!&|~@",
-    },
-    cpp: {
-      line: ["//"], block: [["/*", "*/"]],
-      strings: ['"', "'"], directive: "#",
-      keywords: words("auto break case catch class const constexpr continue " +
-        "default delete do double else enum explicit extern false float for " +
-        "friend goto if inline int long namespace new nullptr operator private " +
-        "protected public return short signed sizeof static struct switch " +
-        "template this throw true try typedef typename union unsigned using " +
-        "virtual void volatile while bool char"),
-      secondary: words("std cout cin endl vector string map set pair size_t " +
-        "unique_ptr shared_ptr printf scanf malloc free"),
-      isType: (w) => /^[A-Z]/.test(w),
-      ops: "+-*/%^=<>!&|~?:",
-    },
-    javascript: {
-      line: ["//"], block: [["/*", "*/"]],
-      strings: ['"', "'", "`"],
-      keywords: words("async await break case catch class const continue " +
-        "debugger default delete do else export extends finally for function " +
-        "if import in instanceof let new of return static super switch this " +
-        "throw try typeof var void while with yield true false null undefined"),
-      secondary: words("console document window Math JSON Object Array Promise " +
-        "Number String Boolean Set Map require module exports"),
-      isType: (w) => /^[A-Z]/.test(w),
-      ops: "+-*/%^=<>!&|~?:",
-    },
-    shell: {
-      line: ["#"], block: [], strings: ['"', "'"],
-      keywords: words("if then else elif fi for while do done case esac " +
-        "function return export local source exit set unset"),
-      secondary: words("echo cd ls cat grep sed awk cp mv rm mkdir python pip git"),
-      ops: "|&<>$=",
-    },
-    json: {
-      line: [], block: [], strings: ['"'],
-      keywords: words("true false null"),
-      ops: ":,",
-    },
-    yaml: {
-      line: ["#"], block: [], strings: ['"', "'"],
-      keywords: words("true false null yes no on off"),
-      ops: ":-|>",
-    },
-    toml: {
-      line: ["#"], block: [], strings: ['"', "'"],
-      keywords: words("true false"),
-      ops: "=[]",
-    },
-    latex: {
-      line: ["%"], block: [], strings: [],
-      command: "\\",
-      keywords: new Set(), ops: "^_&$",
-    },
-    plain: { line: [], block: [], strings: [], keywords: new Set(), ops: "" },
+  /* ---------------- shared state ---------------- */
+  const state = {
+    entries: [],                 // workspace listing
+    active: null,                // active file path
+    dirty: new Map(),            // path -> content differs from saved
+    caps: null,                  // /api/capabilities
+    recentFiles: readJSON("epsilon.recentFiles.v1", []),
+    closedTabs: [],              // for Reopen Closed Editor
+    navStack: [], navIndex: -1,  // go back / forward
+    breakpoints: readJSON("epsilon.breakpoints.v1", {}),  // path -> [lines]
   };
-  SYNTAX.html = SYNTAX.plain;
-  SYNTAX.css = SYNTAX.plain;
 
-  function syntaxFor(language) {
-    return SYNTAX[language] || SYNTAX.plain;
-  }
-
-  function highlight(src, language) {
-    if (language === "markdown") return highlightMarkdown(src);
-    const spec = syntaxFor(language || "epsilon");
-    const out = [];
-    // block-comment / fenced-string state carried across lines
-    const st = { depth: 0, closer: null };
-    src.split("\n").forEach((line) => out.push(highlightLine(line, spec, st)));
-    return out.join("\n");
-  }
-
-  function highlightLine(line, spec, st) {
-    let res = "";
-    let i = 0;
-    const n = line.length;
-    const span = (cls, text) => `<span class="${cls}">${esc(text)}</span>`;
-
-    while (i < n) {
-      // inside a multi-line comment or triple-quoted string
-      if (st.depth > 0) {
-        const end = line.indexOf(st.closer, i);
-        if (end === -1) return res + span("tok-comment", line.slice(i));
-        res += span("tok-comment", line.slice(i, end + st.closer.length));
-        i = end + st.closer.length;
-        st.depth -= 1;
-        if (!st.depth) st.closer = null;
-        continue;
-      }
-
-      const rest = line.slice(i);
-
-      const lineComment = (spec.line || []).find((c) => rest.startsWith(c));
-      if (lineComment) return res + span("tok-comment", rest);
-
-      const opener = (spec.block || []).find(([o]) => rest.startsWith(o));
-      if (opener) {
-        const [open, close] = opener;
-        const end = line.indexOf(close, i + open.length);
-        if (end === -1) {
-          st.depth = 1;
-          st.closer = close;
-          return res + span("tok-comment", rest);
-        }
-        // Epsilon nests its block comments; C-family ones do not
-        if (spec.nested) {
-          st.depth += 1;
-          st.closer = close;
-          res += span("tok-comment", line.slice(i, i + open.length));
-          i += open.length;
-          continue;
-        }
-        res += span("tok-comment", line.slice(i, end + close.length));
-        i = end + close.length;
-        continue;
-      }
-
-      const ch = line[i];
-
-      if ((spec.strings || []).includes(ch)) {
-        let j = i + 1;
-        while (j < n && line[j] !== ch) { if (line[j] === "\\") j++; j++; }
-        res += span("tok-string", line.slice(i, Math.min(j + 1, n)));
-        i = j + 1;
-        continue;
-      }
-
-      if (spec.command && ch === "\\") {
-        let j = i + 1;
-        while (j < n && /[A-Za-z]/.test(line[j])) j++;
-        res += span("tok-keyword", line.slice(i, Math.max(j, i + 2)));
-        i = Math.max(j, i + 2);
-        continue;
-      }
-
-      if (spec.directive && ch === spec.directive) {
-        let j = i + 1;
-        while (j < n && /[a-zA-Z_]/.test(line[j])) j++;
-        res += span("tok-directive", line.slice(i, j));
-        i = j;
-        continue;
-      }
-
-      if (/[0-9]/.test(ch)) {
-        let j = i;
-        while (j < n && /[0-9._a-fA-FxX]/.test(line[j])) j++;
-        res += span("tok-num", line.slice(i, j));
-        i = j;
-        continue;
-      }
-
-      const startRe = spec.identStart || /[A-Za-z_]/;
-      if (startRe.test(ch)) {
-        const bodyRe = spec.identBody || /[A-Za-z0-9_]/;
-        let j = i;
-        while (j < n && bodyRe.test(line[j])) j++;
-        const word = line.slice(i, j);
-        let cls = "";
-        if (spec.keywords && spec.keywords.has(word)) cls = "tok-keyword";
-        else if (spec.secondary && spec.secondary.has(word)) cls = "tok-tactic";
-        else if (spec.isType && spec.isType(word)) cls = "tok-type";
-        res += cls ? span(cls, word) : esc(word);
-        i = j;
-        continue;
-      }
-
-      if ((spec.ops || "").includes(ch)) {
-        res += span("tok-op", ch);
-        i++;
-        continue;
-      }
-
-      res += esc(ch);
-      i++;
-    }
-    return res;
-  }
-
-  /** Markdown is prose with markup, not code — it gets its own pass. */
-  function highlightMarkdown(src) {
-    let fenced = false;
-    return src.split("\n").map((line) => {
-      if (/^\s*```/.test(line)) {
-        fenced = !fenced;
-        return `<span class="tok-directive">${esc(line)}</span>`;
-      }
-      if (fenced) return `<span class="tok-string">${esc(line)}</span>`;
-      if (/^\s{0,3}#{1,6}\s/.test(line))
-        return `<span class="tok-keyword">${esc(line)}</span>`;
-      if (/^\s*>/.test(line)) return `<span class="tok-comment">${esc(line)}</span>`;
-      if (/^\s*([-*+]|\d+\.)\s/.test(line)) {
-        const m = line.match(/^(\s*([-*+]|\d+\.)\s)/);
-        return `<span class="tok-op">${esc(m[1])}</span>` + inlineMarkdown(line.slice(m[1].length));
-      }
-      return inlineMarkdown(line);
-    }).join("\n");
-  }
-
-  function inlineMarkdown(text) {
-    let out = "";
-    let i = 0;
-    while (i < text.length) {
-      const rest = text.slice(i);
-      let m = rest.match(/^`[^`]+`/);
-      if (m) { out += `<span class="tok-string">${esc(m[0])}</span>`; i += m[0].length; continue; }
-      m = rest.match(/^\*\*[^*]+\*\*|^__[^_]+__/);
-      if (m) { out += `<span class="tok-type">${esc(m[0])}</span>`; i += m[0].length; continue; }
-      m = rest.match(/^\[[^\]]*\]\([^)]*\)/);
-      if (m) { out += `<span class="tok-directive">${esc(m[0])}</span>`; i += m[0].length; continue; }
-      out += esc(text[i]);
-      i++;
-    }
-    return out;
-  }
-
-  /* ===================================================================
-   * Editor
-   * =================================================================== */
-  const editor = $("#editor");
-  const highlightCode = $("#highlightCode");
-  const gutter = $("#gutter");
-  const codeScroll = $("#codeScroll");
-  let errorLines = new Set();
-
-  function renderEditor() {
-    const src = editor.value;
-    const lang = currentLanguage();
-    editor.dataset.language = lang;
-    highlightCode.innerHTML = highlight(src, lang);
-    const lineCount = src.split("\n").length;
-    let g = "";
-    for (let i = 1; i <= lineCount; i++) {
-      g += errorLines.has(i)
-        ? `<span class="gerr">${i}</span>\n`
-        : `${i}\n`;
-    }
-    gutter.textContent = "";
-    gutter.innerHTML = g;
-    // size the textarea to content so the overlay lines up
-    editor.style.height = "auto";
-    editor.style.height = editor.scrollHeight + "px";
-  }
-
-  editor.addEventListener("input", () => {
-    const tab = currentTab();
-    if (tab) {
-      tab.content = editor.value;
-      if (run.diags && run.diags.path === tab.path) run.diags = null;
-      tab.dirty = tab.content !== tab.saved;
-      renderTabs();
-      renderFileList();
-    }
-    renderEditor();
-    scheduleCheck();
-  });
-
-  editor.addEventListener("scroll", () => {
-    highlightCode.parentElement.style.transform =
-      `translate(${-editor.scrollLeft}px, ${-editor.scrollTop}px)`;
-    gutter.style.transform = `translateY(${-editor.scrollTop}px)`;
-  });
-  codeScroll.addEventListener("scroll", () => {
-    gutter.scrollTop = codeScroll.scrollTop;
-  });
-
-  editor.addEventListener("keydown", (e) => {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      insertAtCursor("  ");
-    }
-    updateCursor();
-  });
-  editor.addEventListener("keyup", updateCursor);
-  editor.addEventListener("click", updateCursor);
-
-  // backslash unicode input: type \name then space
-  const UNICODE_MAP = {
-    to: "→", forall: "∀", exists: "∃", lambda: "λ", fun: "λ", le: "≤",
-    ge: "≥", ne: "≠", and: "∧", or: "∨", not: "¬", iff: "↔", in: "∈",
-    sub: "⊆", subseteq: "⊆", sqrt: "√", pi: "π", N: "ℕ", Z: "ℤ", Q: "ℚ",
-    R: "ℝ", C: "ℂ", x: "×", circ: "∘", cdot: "·", alpha: "α", beta: "β",
-    gamma: "γ", delta: "δ", epsilon: "ε", eps: "ε", theta: "θ", mu: "μ",
-    sigma: "σ", omega: "ω", infty: "∞", empty: "∅",
-  };
-  editor.addEventListener("beforeinput", (e) => {
-    if (e.inputType !== "insertText" || e.data !== " ") return;
-    const pos = editor.selectionStart;
-    const before = editor.value.slice(0, pos);
-    const m = before.match(/\\([A-Za-z]+)$/);
-    if (m && UNICODE_MAP[m[1]]) {
-      e.preventDefault();
-      const start = pos - m[0].length;
-      editor.setRangeText(UNICODE_MAP[m[1]], start, pos, "end");
-      editor.dispatchEvent(new Event("input"));
-    }
-  });
-
-  function insertAtCursor(text) {
-    const s = editor.selectionStart, e = editor.selectionEnd;
-    editor.setRangeText(text, s, e, "end");
-    editor.dispatchEvent(new Event("input"));
-  }
-
-  function updateCursor() {
-    const pos = editor.selectionStart;
-    const before = editor.value.slice(0, pos);
-    const line = before.split("\n").length;
-    const col = pos - before.lastIndexOf("\n");
-    $("#cursorPos").textContent = `Ln ${line}, Col ${col}`;
-  }
-
-  function gotoSpan(span) {
-    if (!span || !span[0]) return;
-    const [l0, c0] = span;
-    const lines = editor.value.split("\n");
-    let pos = 0;
-    for (let i = 0; i < l0 - 1 && i < lines.length; i++) pos += lines[i].length + 1;
-    pos += c0 - 1;
-    editor.focus();
-    editor.setSelectionRange(pos, pos);
-    updateCursor();
-    // scroll into view
-    const lineTop = (l0 - 1) * 20;
-    codeScroll.scrollTop = Math.max(0, lineTop - codeScroll.clientHeight / 2);
-  }
-
-  /* ===================================================================
-   * Files & tabs
-   * =================================================================== */
-  function currentTab() {
-    return state.tabs.find((t) => t.path === state.active);
-  }
-
-  /** Extension -> editor language. Mirrors the server's `_language_of`. */
   const EXT_LANGUAGE = {
     epsl: "epsilon", py: "python", pyi: "python",
     cpp: "cpp", cc: "cpp", cxx: "cpp", c: "cpp", h: "cpp", hpp: "cpp",
@@ -456,206 +103,445 @@
     yaml: "yaml", yml: "yaml", tex: "latex", js: "javascript",
     ts: "javascript", html: "html", css: "css", sh: "shell",
   };
-
+  const LANGUAGE_LABEL = {
+    python: "Python", cpp: "C++", epsilon: "Epsilon", markdown: "Markdown",
+    json: "JSON", toml: "TOML", yaml: "YAML", latex: "LaTeX",
+    javascript: "JavaScript", shell: "Shell", html: "HTML", css: "CSS",
+    plain: "Plain Text",
+  };
   function languageOf(path) {
-    const entry = (state.entries || []).find((e) => e.path === path);
-    if (entry && entry.language) return entry.language;
     const dot = path.lastIndexOf(".");
-    return (dot < 0 ? "" : EXT_LANGUAGE[path.slice(dot + 1).toLowerCase()]) || "plain";
+    return (dot < 0 ? "" : EXT_LANGUAGE[path.slice(dot + 1).toLowerCase()])
+      || "plain";
+  }
+  const RUNNABLE = new Set(["python", "cpp"]);
+
+  /* =================================================================
+   * Settings schema
+   * ================================================================= */
+  function registerSettings() {
+    const S = Settings.register;
+    // Text Editor
+    S({ id: "editor.fontSize", title: "Font Size", category: "Text Editor",
+        type: "number", default: 13, min: 8, max: 32,
+        description: "Editor font size in pixels." });
+    S({ id: "editor.fontFamily", title: "Font Family", category: "Text Editor",
+        type: "string", default: "",
+        description: "Overrides the editor font stack when set." });
+    S({ id: "editor.lineHeight", title: "Line Height", category: "Text Editor",
+        type: "number", default: 1.55, min: 1.1, max: 2.4,
+        description: "Line height as a multiple of the font size." });
+    S({ id: "editor.tabSize", title: "Tab Size", category: "Text Editor",
+        type: "number", default: 4, min: 1, max: 8,
+        description: "Spaces per indentation level." });
+    S({ id: "editor.insertSpaces", title: "Insert Spaces",
+        category: "Text Editor", type: "boolean", default: true,
+        description: "Indent with spaces instead of tab characters." });
+    S({ id: "editor.wordWrap", title: "Word Wrap", category: "Text Editor",
+        type: "boolean", default: false,
+        description: "Wrap long lines instead of scrolling horizontally." });
+    S({ id: "editor.lineNumbers", title: "Line Numbers",
+        category: "Text Editor", type: "boolean", default: true });
+    S({ id: "editor.renderWhitespace", title: "Render Whitespace",
+        category: "Text Editor", type: "enum", default: "none",
+        options: ["none", "boundary", "all"],
+        description: "Show spaces and tabs in the editor overlay." });
+    S({ id: "editor.cursorStyle", title: "Cursor Style",
+        category: "Text Editor", type: "enum", default: "line",
+        options: ["line", "block", "underline"] });
+    S({ id: "editor.cursorBlinking", title: "Cursor Blinking",
+        category: "Text Editor", type: "enum", default: "smooth",
+        options: ["blink", "smooth", "expand", "solid"] });
+    S({ id: "editor.autoClosingBrackets", title: "Auto Closing Brackets",
+        category: "Text Editor", type: "boolean", default: true });
+    S({ id: "editor.formatOnSave", title: "Format On Save",
+        category: "Text Editor", type: "boolean", default: false,
+        description: "Run the formatter every time a file is saved." });
+    // Workbench
+    S({ id: "workbench.activityBar", title: "Activity Bar",
+        category: "Workbench", type: "boolean", default: true });
+    S({ id: "workbench.statusBar", title: "Status Bar",
+        category: "Workbench", type: "boolean", default: true });
+    S({ id: "workbench.sidebarWidth", title: "Sidebar Width",
+        category: "Workbench", type: "number", default: 260, min: 160,
+        max: 600 });
+    S({ id: "workbench.panelHeight", title: "Panel Height",
+        category: "Workbench", type: "number", default: 240, min: 100,
+        max: 800 });
+    S({ id: "workbench.theme", title: "Color Theme", category: "Workbench",
+        type: "enum", default: "dark",
+        options: ["dark", "light", "high-contrast"] });
+    S({ id: "workbench.reducedMotion", title: "Reduced Motion",
+        category: "Workbench", type: "boolean", default: false,
+        description: "Disable animations regardless of system preference." });
+    // Terminal
+    S({ id: "terminal.fontSize", title: "Terminal Font Size",
+        category: "Terminal", type: "number", default: 12.5, min: 8,
+        max: 24 });
+    // Run
+    S({ id: "run.saveBeforeRun", title: "Save Before Run", category: "Run",
+        type: "boolean", default: true });
+    S({ id: "run.timeout", title: "Run Timeout (seconds)", category: "Run",
+        type: "number", default: 10, min: 1, max: 60 });
   }
 
-  /** The language of the file in the editor right now. */
+  /* =================================================================
+   * Editor groups — panes.js hosts one view per open file
+   * ================================================================= */
+  const editors = new Map();     // path -> {editor: CodeEditor, host}
+  const SPECIAL = new Map();     // special tabs: settings://, shortcuts://…
+
+  function currentEditor() {
+    return state.active ? editors.get(state.active) : null;
+  }
   function currentLanguage() {
-    const tab = currentTab();
-    return tab ? tab.language || languageOf(tab.path) : "epsilon";
+    return state.active && !SPECIAL.has(state.active)
+      ? languageOf(state.active) : "plain";
   }
 
-  /** Only Epsilon files go through the proof engine. */
-  const isEpsilon = () => currentLanguage() === "epsilon";
+  function tabTitle(path) {
+    if (SPECIAL.has(path)) return SPECIAL.get(path).title;
+    return path.split("/").pop();
+  }
 
-  async function loadFiles() {
-    const r = await api("GET", "/api/files");
-    state.files = r.files || [];
-    state.entries = r.entries || (state.files || []).map((f) =>
-      ({ ...f, kind: "file", language: "epsilon", editable: true }));
-    renderFileList();
-    if (state.files.length === 0) {
-      await api("POST", "/api/file", { path: "main.epsl", content: "" });
-      return loadFiles();
+  async function openFile(path, opts = {}) {
+    if (SPECIAL.has(path)) {
+      EpsilonPanes.openView(path);
+      state.active = path;
+      refreshChrome();
+      return;
     }
-    if (!state.active) openFile(state.files[0].path);
+    if (!editors.has(path)) {
+      const r = await api("GET", "/api/file?path=" + encodeURIComponent(path));
+      if (r && r.ok === false) return;
+      const host = el("div", "wb-editor-host");
+      const language = languageOf(path);
+      const ed = new CodeEditor(host, {
+        language,
+        value: r.content || "",
+        path,
+        settings: (id) => Settings.get(id),
+        onChange: () => {
+          const entry = editors.get(path);
+          const dirty = entry.editor.getValue() !== entry.saved;
+          if (state.dirty.get(path) !== dirty) {
+            state.dirty.set(path, dirty);
+            EpsilonPanes.setDirty(path, dirty);
+            renderExplorer();
+            refreshChrome();
+          }
+        },
+        onCursor: () => { if (path === state.active) renderStatusbar(); },
+        completions: async (ctx) => {
+          // the API speaks jedi's convention: 1-based line, 0-based column
+          const reply = await api("POST", "/api/complete", {
+            language: ctx.language, code: ctx.code, line: ctx.line,
+            col: ctx.col, path: ctx.path,
+          });
+          return (reply && reply.items) || [];
+        },
+        onBreakpoints: (lines) => {
+          state.breakpoints[path] = lines;
+          writeJSON("epsilon.breakpoints.v1", state.breakpoints);
+          renderRunDebug();
+        },
+      });
+      (state.breakpoints[path] || []).forEach((line) =>
+        ed.breakpoints.add(line));
+      editors.set(path, { editor: ed, host, saved: r.content || "" });
+      EpsilonPanes.registerView(path, {
+        title: tabTitle(path), element: host, closable: true,
+        icon: "",
+        onShow: () => {
+          state.active = path;
+          pushNav(path);
+          refreshChrome();
+          ed.setDiagnostics(Diagnostics.forPath(path));
+          setTimeout(() => ed.focus(), 0);
+        },
+        onClose: () => closeFile(path, { keepValue: true }),
+      });
+    }
+    EpsilonPanes.openView(path, opts);
+    state.active = path;
+    state.recentFiles = [path,
+      ...state.recentFiles.filter((p) => p !== path)].slice(0, 15);
+    writeJSON("epsilon.recentFiles.v1", state.recentFiles);
+    pushNav(path);
+    refreshChrome();
   }
 
-  /* ---- explorer tree ---- */
+  function closeFile(path, opts = {}) {
+    const entry = editors.get(path);
+    if (entry) {
+      state.closedTabs.push(path);
+      entry.editor.destroy();
+      editors.delete(path);
+      state.dirty.delete(path);
+    }
+    if (SPECIAL.has(path) && !SPECIAL.get(path).permanent) SPECIAL.delete(path);
+    if (state.active === path) {
+      state.active = EpsilonPanes.activeView() || null;
+      refreshChrome();
+    }
+  }
 
+  async function saveFile(path) {
+    const entry = editors.get(path);
+    if (!entry) return;
+    let content = entry.editor.getValue();
+    if (Settings.get("editor.formatOnSave") &&
+        state.caps && state.caps.format &&
+        state.caps.format[languageOf(path)]) {
+      const r = await api("POST", "/api/format",
+                          { language: languageOf(path), code: content });
+      if (r.ok) {
+        content = r.code;
+        const [s, e] = entry.editor.getSelection();
+        entry.editor.setValue(content);
+        entry.editor.setSelection(Math.min(s, content.length),
+                                  Math.min(e, content.length));
+      }
+    }
+    const w = await api("PUT", "/api/file", { path, content });
+    if (w && w.ok === false) return;
+    entry.saved = content;
+    state.dirty.set(path, false);
+    EpsilonPanes.setDirty(path, false);
+    renderExplorer();
+    refreshChrome();
+    refreshGit();
+    notify("Saved " + tabTitle(path), "ok");
+  }
+
+  /* ---------------- navigation history ---------------- */
+  function pushNav(path) {
+    const cursor = editors.has(path)
+      ? editors.get(path).editor.cursor() : { line: 1, col: 1 };
+    const top = state.navStack[state.navIndex];
+    if (top && top.path === path && Math.abs(top.line - cursor.line) < 5) {
+      top.line = cursor.line;
+      return;
+    }
+    state.navStack = state.navStack.slice(0, state.navIndex + 1);
+    state.navStack.push({ path, line: cursor.line, col: cursor.col });
+    if (state.navStack.length > 100) state.navStack.shift();
+    state.navIndex = state.navStack.length - 1;
+  }
+
+  function navGo(delta) {
+    const idx = state.navIndex + delta;
+    if (idx < 0 || idx >= state.navStack.length) return;
+    state.navIndex = idx;
+    const loc = state.navStack[idx];
+    openFile(loc.path).then(() => {
+      const entry = editors.get(loc.path);
+      if (entry) entry.editor.revealLine(loc.line, loc.col);
+    });
+  }
+
+  /* =================================================================
+   * Chrome refresh (title, statusbar, run button)
+   * ================================================================= */
+  function refreshChrome() {
+    renderStatusbar();
+    renderRunButton();
+    renderOutline();
+    persistWorkspace();
+    document.title = state.active
+      ? `${state.dirty.get(state.active) ? "● " : ""}${tabTitle(state.active)}` +
+        " — Epsilon" : "Epsilon";
+  }
+
+  /* =================================================================
+   * Explorer (primary sidebar view)
+   * ================================================================= */
   const COLLAPSE_KEY = "epsilon.explorer.collapsed.v1";
   const collapsed = new Set(readJSON(COLLAPSE_KEY, []));
-  function persistCollapsed() {
+  const persistCollapsed = () =>
     writeJSON(COLLAPSE_KEY, Array.from(collapsed));
-  }
 
-  /** A small glyph per language — enough to tell files apart at a glance. */
   const FILE_GLYPH = {
-    epsilon: "ε", python: "py", cpp: "c++", markdown: "md", json: "{}",
+    python: "py", cpp: "c++", epsilon: "ε", markdown: "md", json: "{}",
     toml: "cfg", yaml: "yml", latex: "TeX", javascript: "js", html: "<>",
     css: "css", shell: "$",
   };
 
-  /** Build a nested tree from the flat entry list the API returns. */
+  async function loadFiles() {
+    const r = await api("GET", "/api/files");
+    state.entries = r.entries || [];
+    renderExplorer();
+  }
+
   function fileTree(entries) {
-    const root = { children: new Map() };
-    const nodeAt = (path, kind, entry) => {
-      const parts = path.split("/");
-      let node = root;
+    const rootNode = { children: new Map() };
+    entries.forEach((entry) => {
+      const parts = entry.path.split("/");
+      let node = rootNode;
       parts.forEach((part, i) => {
         const here = parts.slice(0, i + 1).join("/");
         if (!node.children.has(part)) {
           node.children.set(part, {
             name: part, path: here, children: new Map(),
-            kind: i === parts.length - 1 ? kind : "folder",
+            kind: i === parts.length - 1 ? entry.kind : "folder",
             entry: i === parts.length - 1 ? entry : null,
           });
         }
         node = node.children.get(part);
       });
-      return node;
-    };
-    entries.forEach((e) => nodeAt(e.path, e.kind, e));
-    return root;
+    });
+    return rootNode;
   }
 
-  function matchesFilter(node, needle) {
-    if (!needle) return true;
-    if (node.path.toLowerCase().includes(needle)) return true;
-    return Array.from(node.children.values())
-      .some((c) => matchesFilter(c, needle));
-  }
-
-  function renderFileList() {
-    const list = $("#fileList");
+  function renderExplorer() {
+    const list = $("#explorerList");
+    if (!list) return;
     list.innerHTML = "";
     const needle = (state.fileFilter || "").trim().toLowerCase();
-    const root = fileTree(state.entries || []);
-
+    const rootNode = fileTree(state.entries);
+    const matches = (node) => !needle ||
+      node.path.toLowerCase().includes(needle) ||
+      Array.from(node.children.values()).some(matches);
     const sorted = (node) => Array.from(node.children.values()).sort((a, b) =>
-      (a.kind === b.kind ? 0 : a.kind === "folder" ? -1 : 1)
-      || a.name.localeCompare(b.name));
-
+      (a.kind === b.kind ? 0 : a.kind === "folder" ? -1 : 1) ||
+      a.name.localeCompare(b.name));
     const walk = (node, depth) => {
       sorted(node).forEach((child) => {
-        if (!matchesFilter(child, needle)) return;
-        list.appendChild(rowFor(child, depth));
-        // a filter expands what it matches, so a hit is never hidden
-        const open = needle || !collapsed.has(child.path);
-        if (child.kind === "folder" && open) walk(child, depth + 1);
+        if (!matches(child)) return;
+        list.appendChild(explorerRow(child, depth));
+        if (child.kind === "folder" && (needle || !collapsed.has(child.path))) {
+          walk(child, depth + 1);
+        }
       });
     };
-    walk(root, 0);
-
+    walk(rootNode, 0);
     if (!list.children.length) {
-      const empty = el("li", "file-empty",
-        needle ? "No file matches that filter." : "No files yet.");
-      list.appendChild(empty);
+      list.appendChild(el("li", "wb-empty",
+        needle ? "No file matches the filter." : "No files yet."));
     }
   }
 
-  function rowFor(node, depth) {
-    const item = el("li", "file-item" + (node.kind === "folder" ? " folder" : ""));
-    item.style.paddingLeft = 8 + depth * 13 + "px";
+  function explorerRow(node, depth) {
+    const item = el("li",
+      "wb-file" + (node.kind === "folder" ? " folder" : ""));
+    item.style.paddingLeft = 10 + depth * 12 + "px";
     item.dataset.path = node.path;
     item.dataset.kind = node.kind;
     item.title = node.path;
-
+    item.tabIndex = 0;
+    item.setAttribute("role", "treeitem");
     if (node.kind === "folder") {
-      const twisty = el("span", "twisty", collapsed.has(node.path) ? "▸" : "▾");
-      item.appendChild(twisty);
-      item.appendChild(el("span", "file-glyph folder-glyph", "▪"));
+      item.appendChild(el("span", "wb-twisty",
+        collapsed.has(node.path) ? "▸" : "▾"));
     } else {
       const lang = (node.entry && node.entry.language) || "plain";
-      item.appendChild(el("span", "file-glyph lang-" + lang,
-                          FILE_GLYPH[lang] || "·"));
+      item.appendChild(el("span", "wb-glyph lang-" + lang,
+        FILE_GLYPH[lang] || "·"));
     }
-
-    item.appendChild(el("span", "file-name", node.name));
-
-    const tab = state.tabs.find((t) => t.path === node.path);
-    if (tab && tab.dirty) item.classList.add("dirty");
+    item.appendChild(el("span", "wb-file-name", node.name));
+    if (state.dirty.get(node.path)) item.appendChild(el("span", "wb-dot"));
     if (node.path === state.active) item.classList.add("active");
-    item.appendChild(el("span", "dirty"));
-
-    item.onclick = () => {
+    const activate = () => {
       if (node.kind === "folder") {
         if (collapsed.has(node.path)) collapsed.delete(node.path);
         else collapsed.add(node.path);
         persistCollapsed();
-        renderFileList();
+        renderExplorer();
       } else if (node.entry && node.entry.editable === false) {
-        toast(node.name + " is not a text file", "warn");
+        notify(node.name + " is not a text file", "warn");
       } else {
         openFile(node.path);
       }
     };
-    item.oncontextmenu = (e) => {
-      e.preventDefault();
-      openContextMenu(e.clientX, e.clientY, node);
+    item.onclick = activate;
+    item.onkeydown = (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); activate(); }
     };
-
-    wireFileDrag(item, node);
+    item.oncontextmenu = (ev) => {
+      ev.preventDefault();
+      showContextMenu("explorer", ev.clientX, ev.clientY, { node });
+    };
+    wireExplorerDrag(item, node);
     return item;
   }
 
-  /* ---- drag a file onto a folder to move it ---- */
-
-  function wireFileDrag(item, node) {
+  function wireExplorerDrag(item, node) {
     item.draggable = true;
-    item.addEventListener("dragstart", (e) => {
-      e.dataTransfer.setData("text/epsilon-path", node.path);
-      e.dataTransfer.effectAllowed = "move";
+    item.addEventListener("dragstart", (ev) => {
+      ev.dataTransfer.setData("text/epsilon-path", node.path);
+      ev.dataTransfer.effectAllowed = "move";
     });
     if (node.kind !== "folder") return;
-    item.addEventListener("dragover", (e) => {
-      if (!e.dataTransfer.types.includes("text/epsilon-path")) return;
-      e.preventDefault();
-      item.classList.add("drop-target");
+    item.addEventListener("dragover", (ev) => {
+      if (!ev.dataTransfer.types.includes("text/epsilon-path")) return;
+      ev.preventDefault();
+      item.classList.add("drop");
     });
-    item.addEventListener("dragleave", () => item.classList.remove("drop-target"));
-    item.addEventListener("drop", (e) => {
-      e.preventDefault();
-      item.classList.remove("drop-target");
-      const from = e.dataTransfer.getData("text/epsilon-path");
-      if (!from) return;
-      moveEntry(from, node.path + "/" + from.split("/").pop());
+    item.addEventListener("dragleave", () => item.classList.remove("drop"));
+    item.addEventListener("drop", (ev) => {
+      ev.preventDefault();
+      item.classList.remove("drop");
+      const from = ev.dataTransfer.getData("text/epsilon-path");
+      if (from) moveEntry(from, node.path + "/" + from.split("/").pop());
     });
-  }
-
-  /* ---- explorer commands ---- */
-
-  /** The folder a new entry should land in, given what is selected. */
-  function currentFolder(node) {
-    if (node) return node.kind === "folder" ? node.path
-      : node.path.split("/").slice(0, -1).join("/");
-    if (state.active) return state.active.split("/").slice(0, -1).join("/");
-    return "";
   }
 
   const joinPath = (dir, name) => (dir ? dir + "/" + name : name);
+  function folderOf(node) {
+    if (node) {
+      return node.kind === "folder" ? node.path
+        : node.path.split("/").slice(0, -1).join("/");
+    }
+    if (state.active && !SPECIAL.has(state.active)) {
+      return state.active.split("/").slice(0, -1).join("/");
+    }
+    return "";
+  }
 
   async function moveEntry(from, to) {
     if (!to || from === to) return;
     const r = await api("POST", "/api/rename", { path: from, to });
     if (r && r.ok === false) return;
-    // follow the file: open tabs and the active file keep pointing at it
-    state.tabs.forEach((t) => {
-      if (t.path === from) t.path = to;
-      else if (t.path.startsWith(from + "/")) t.path = to + t.path.slice(from.length);
-    });
-    if (state.active === from) state.active = to;
-    else if (state.active && state.active.startsWith(from + "/"))
-      state.active = to + state.active.slice(from.length);
-    if (collapsed.delete(from)) { collapsed.add(to); persistCollapsed(); }
+    if (editors.has(from)) {
+      const entry = editors.get(from);
+      editors.delete(from);
+      editors.set(to, entry);
+      EpsilonPanes.renameView(from, to, tabTitle(to));
+      if (state.active === from) state.active = to;
+    }
     await loadFiles();
-    renderTabs();
-    toast("Moved to " + to, "ok");
+    refreshGit();
+  }
+
+  async function newFile(node) {
+    const name = prompt("New file name:", "untitled.py");
+    if (!name) return;
+    const path = joinPath(folderOf(node),
+      /\.[^./]+$/.test(name) ? name : name + ".py");
+    const r = await api("POST", "/api/file", { path, content: "" });
+    if (r && r.ok === false) return;
+    await loadFiles();
+    openFile(path);
+  }
+
+  async function newFolder(node) {
+    const name = prompt("New folder name:", "src");
+    if (!name) return;
+    await api("POST", "/api/folder", { path: joinPath(folderOf(node), name) });
+    await loadFiles();
+  }
+
+  async function newProject() {
+    const name = prompt("New project name:", "my-project");
+    if (!name) return;
+    await api("POST", "/api/folder", { path: name });
+    const main = name + "/main.py";
+    await api("POST", "/api/file", {
+      path: main,
+      content: '"""' + name + '"""\n\n\ndef main() -> None:\n    print("hello from ' + name + '")\n\n\nif __name__ == "__main__":\n    main()\n' });
+    await loadFiles();
+    openFile(main);
+    notify("Project " + name + " created", "ok");
   }
 
   async function renameEntry(node) {
@@ -665,2396 +551,2526 @@
     await moveEntry(node.path, joinPath(dir, name));
   }
 
-  async function duplicateEntry(node) {
-    const r = await api("POST", "/api/duplicate", { path: node.path });
-    await loadFiles();
-    if (r && r.path) toast("Duplicated to " + r.path, "ok");
-  }
-
   async function deleteEntry(node) {
     const what = node.kind === "folder"
-      ? `Delete the folder "${node.name}" and everything in it?`
-      : `Delete "${node.name}"?`;
+      ? 'Delete the folder "' + node.name + '" and everything in it?'
+      : 'Delete "' + node.name + '"?';
     if (!confirm(what)) return;
     if (node.kind === "folder") {
       await api("DELETE", "/api/folder?path=" + encodeURIComponent(node.path));
-      state.tabs.filter((t) => t.path.startsWith(node.path + "/"))
-        .forEach((t) => closeTab(t.path));
+      Array.from(editors.keys())
+        .filter((p) => p.startsWith(node.path + "/"))
+        .forEach((p) => { EpsilonPanes.closeView(p); closeFile(p); });
     } else {
       await api("DELETE", "/api/file?path=" + encodeURIComponent(node.path));
-      closeTab(node.path);
+      EpsilonPanes.closeView(node.path);
+      closeFile(node.path);
     }
     await loadFiles();
-    toast("Deleted " + node.name, "ok");
+    refreshGit();
   }
 
-  async function newFolder(node) {
-    const name = prompt("New folder name:", "untitled");
-    if (!name) return;
-    await api("POST", "/api/folder", { path: joinPath(currentFolder(node), name) });
-    await loadFiles();
-  }
-
-  /* ---- context menu ---- */
-
-  function openContextMenu(x, y, node) {
-    const menu = $("#ctxMenu");
-    menu.innerHTML = "";
-    const add = (label, run, danger) => {
-      const b = el("button", "ctx-item" + (danger ? " danger" : ""), label);
-      b.onclick = () => { closeContextMenu(); run(); };
-      menu.appendChild(b);
-    };
-    add("New file…", () => newFile(node));
-    add("New folder…", () => newFolder(node));
-    // the workspace root is a place to put things, not a thing itself
-    if (node.path) {
-      menu.appendChild(el("div", "ctx-sep"));
-      add("Rename…", () => renameEntry(node));
-      add("Duplicate", () => duplicateEntry(node));
-      add("Copy path", () => {
-        if (navigator.clipboard) navigator.clipboard.writeText(node.path);
-        toast("Copied " + node.path, "ok");
-      });
-      menu.appendChild(el("div", "ctx-sep"));
-      add("Delete", () => deleteEntry(node), true);
-    }
-
-    menu.classList.remove("hidden");
-    // keep the menu on screen when the click lands near an edge
-    const r = menu.getBoundingClientRect();
-    menu.style.left = Math.min(x, window.innerWidth - r.width - 8) + "px";
-    menu.style.top = Math.min(y, window.innerHeight - r.height - 8) + "px";
-  }
-
-  function closeContextMenu() {
-    const menu = $("#ctxMenu");
-    if (menu) menu.classList.add("hidden");
-  }
-
-  async function openFile(path) {
-    let tab = state.tabs.find((t) => t.path === path);
-    if (!tab) {
-      const r = await api("GET", "/api/file?path=" + encodeURIComponent(path));
-      tab = { path, content: r.content || "", saved: r.content || "",
-              dirty: false, language: languageOf(path) };
-      state.tabs.push(tab);
-    }
-    state.active = path;
-    editor.value = tab.content;
-    renderEditor();
-    renderTabs();
-    renderFileList();
-    updateCursor();
-    runCheck();
-  }
-
-  function renderTabs() {
-    const strip = $("#tabstrip");
-    strip.innerHTML = "";
-    state.tabs.forEach((t) => {
-      const tab = el("div", "tab" + (t.path === state.active ? " active" : ""));
-      const name = t.path.split("/").pop();
-      const lang = t.language || languageOf(t.path);
-      tab.appendChild(el("span", "file-glyph lang-" + lang,
-                         FILE_GLYPH[lang] || "·"));
-      tab.appendChild(el("span", null, name));
-      tab.title = t.path;
-      if (t.dirty) tab.appendChild(el("span", "dirty"));
-      const close = el("span", "close", "×");
-      close.onclick = (e) => {
-        e.stopPropagation();
-        closeTab(t.path);
-      };
-      tab.appendChild(close);
-      tab.onclick = () => openFile(t.path);
-      strip.appendChild(tab);
-    });
-  }
-
-  function closeTab(path) {
-    const idx = state.tabs.findIndex((t) => t.path === path);
-    if (idx === -1) return;
-    state.tabs.splice(idx, 1);
-    if (state.active === path) {
-      state.active = null;
-      if (state.tabs.length) openFile(state.tabs[Math.max(0, idx - 1)].path);
-      else { editor.value = ""; renderEditor(); }
-    }
-    renderTabs();
-    renderFileList();
-  }
-
-  async function saveCurrent() {
-    const tab = currentTab();
-    if (!tab) return;
-    await api("PUT", "/api/file", { path: tab.path, content: tab.content });
-    tab.saved = tab.content;
-    tab.dirty = false;
-    renderTabs();
-    renderFileList();
-    toast("Saved " + tab.path.split("/").pop(), "ok");
-    runCheck();
-  }
-
-  async function newFile(node) {
-    const name = prompt("New file name:", "untitled.epsl");
-    if (!name) return;
-    // no extension means Epsilon — the language this IDE is for
-    const path = joinPath(currentFolder(node),
-                          /\.[^./]+$/.test(name) ? name : name + ".epsl");
-    const r = await api("POST", "/api/file", { path, content: "" });
-    if (r && r.ok === false) return;
-    const dir = path.split("/").slice(0, -1).join("/");
-    if (dir && collapsed.delete(dir)) persistCollapsed();
-    await loadFiles();
-    openFile(path);
-  }
-
-  /* ===================================================================
-   * Check flow
-   * =================================================================== */
-  let checkTimer = null;
-  function scheduleCheck() {
-    clearTimeout(checkTimer);
-    checkTimer = setTimeout(runCheck, 650);
-  }
-
-  async function runCheck() {
-    const tab = currentTab();
-    if (!tab) return;
-    // the proof engine only understands Epsilon. Reporting bogus Epsilon
-    // errors against a Python file would be worse than reporting nothing.
-    if (!isEpsilon()) {
-      // a Python/C++ buffer's problems come from its last run, not from
-      // the Epsilon checker — keep them on screen instead of wiping them
-      applyRunDiagnostics();
-      setCheckState("na");
-      // the theorem list, plots and graph still describe the last Epsilon
-      // file checked, which is the useful thing to keep on screen
-      return;
-    }
-    setCheckState("running");
-    let r;
-    try {
-      r = await api("POST", "/api/check", { path: tab.path, content: tab.content });
-    } catch (e) {
-      setCheckState("error");
-      return;
-    }
-    state.lastCheck = r;
-    errorLines = new Set(
-      (r.diagnostics || [])
-        .filter((d) => d.severity === "error")
-        .map((d) => d.span && d.span[0])
-        .filter(Boolean)
-    );
-    renderEditor();
-    renderProblems(r.diagnostics || []);
-    renderTheorems(r.theorems || []);
-    renderPlots(r.plots || []);
-    renderInspector(r.results || []);
-    renderDeps(r.deps || { nodes: [], edges: [] });
-    setCheckState(r.ok ? "ok" : "error");
-    updateStatusCounts(r.theorems || []);
-    if (EpsilonPanes.isOpen("render")) refreshRender();
-  }
-
-  const LANGUAGE_LABEL = {
-    epsilon: "Epsilon", python: "Python", cpp: "C++", markdown: "Markdown",
-    json: "JSON", toml: "TOML", yaml: "YAML", latex: "LaTeX",
-    javascript: "JavaScript", shell: "Shell", html: "HTML", css: "CSS",
-    plain: "Plain text",
+  /* =================================================================
+   * Bottom panel — Terminal · Problems · Output · Debug Console
+   * ================================================================= */
+  const panel = {
+    open: readJSON("epsilon.panel.open.v1", true),
+    active: readJSON("epsilon.panel.active.v1", "terminal"),
+    tabs: [
+      { id: "terminal", title: "Terminal" },
+      { id: "problems", title: "Problems" },
+      { id: "output", title: "Output" },
+      { id: "debug", title: "Debug Console" },
+    ],
   };
 
-  function setCheckState(s) {
-    const chip = $("#checkState");
-    chip.className = "chip " + (s === "ok" ? "ok" : s === "error" ? "err" :
-      s === "running" ? "running" : "");
-    chip.textContent = s === "running" ? "checking…" :
-      s === "ok" ? "✓ checked" : s === "error" ? "✗ errors" :
-      s === "na" ? "not an Epsilon file" : "ready";
-    $("#checkBtn").classList.toggle("running", s === "running");
-    // the header button follows the language: Check for Epsilon, Run for
-    // Python/C++, disabled where neither applies — never a live-looking
-    // control that does nothing
-    const epsl = isEpsilon();
-    const runnable = canRun();
-    const btn = $("#checkBtn");
-    btn.disabled = !epsl && !runnable;
-    btn.title = epsl ? "Check (Ctrl/Cmd+Enter)"
-      : runnable ? "Run (Ctrl/Cmd+Enter)"
-      : "Checking applies to Epsilon files";
-    const btnLabel = btn.querySelector("span") || btn.appendChild(el("span"));
-    btnLabel.textContent = epsl ? "Check" : runnable ? "Run" : "Check";
-    const label = $("#editorLanguage");
-    if (label) label.textContent = LANGUAGE_LABEL[currentLanguage()] || "Plain text";
+  function showPanel(tabId, focus) {
+    panel.open = true;
+    if (tabId) panel.active = tabId;
+    writeJSON("epsilon.panel.open.v1", true);
+    writeJSON("epsilon.panel.active.v1", panel.active);
+    renderPanel();
+    if (focus && panel.active === "terminal") term.focusInput();
   }
 
-  function updateStatusCounts(theorems) {
-    const c = { proven: 0, symbolic: 0, numeric: 0, heuristic: 0 };
-    theorems.forEach((t) => (c[t.status] = (c[t.status] || 0) + 1));
-    const map = { proven: ["✓", "var(--ok)"], symbolic: ["✓", "var(--sym)"],
-      numeric: ["≈", "var(--num)"], heuristic: ["⚠", "var(--heur)"] };
-    const parts = Object.keys(map)
-      .filter((k) => c[k])
-      .map((k) => `<span class="sc" style="color:${map[k][1]}">${map[k][0]} ${c[k]}</span>`);
-    $("#statusCounts").innerHTML = parts.join("");
-  }
-
-  /* ---- problems ---- */
-  function renderProblems(diags) {
-    const panel = $("#problemsPanel");
-    panel.innerHTML = "";
-    const errs = diags.filter((d) => d.severity !== "info");
-    const warned = errs.some((d) => d.severity === "warning") && errs.every((d) => d.severity === "warning");
-    EpsilonPanes.setBadge("problems", errs.length, warned ? "warn" : "err");
-    if (!errs.length) {
-      panel.appendChild(el("div", "no-problems", "No problems detected."));
-      return;
+  function togglePanel(tabId) {
+    if (panel.open && (!tabId || panel.active === tabId)) {
+      panel.open = false;
+      writeJSON("epsilon.panel.open.v1", false);
+      renderPanel();
+    } else {
+      showPanel(tabId, true);
     }
-    errs.forEach((d) => {
-      const item = el("div", "problem-item");
-      const sev = el("span", "pi-sev" + (d.severity === "warning" ? " warning" : ""),
-        d.severity);
-      const loc = el("span", "pi-loc", `${d.span[0]}:${d.span[1]}`);
-      const wrap = el("div");
-      wrap.appendChild(el("div", "pi-msg", d.message));
-      item.appendChild(sev);
-      item.appendChild(loc);
-      item.appendChild(wrap);
-      item.onclick = () => gotoSpan(d.span);
-      panel.appendChild(item);
-    });
   }
 
-  /* ---- theorems sidebar ---- */
-  function renderTheorems(theorems) {
-    const list = $("#thmList");
-    list.innerHTML = "";
-    const counts = { proven: 0, symbolic: 0, numeric: 0, heuristic: 0 };
-    theorems.forEach((t) => {
-      counts[t.status] = (counts[t.status] || 0) + 1;
-      const item = el("li", "thm-item");
-      if (state.selectedTheorem === t.name) item.classList.add("active");
-      const row = el("div", "thm-row");
-      row.appendChild(el("span", "status-dot " + t.status));
-      // lead with the mathematical name when the library gives one, and
-      // keep the internal identifier visible underneath - it is what a
-      // proof cites and what error messages name
-      row.appendChild(el("span", "thm-name", t.title || t.name));
-      item.appendChild(row);
-      if (t.display_name) item.appendChild(el("div", "thm-ident", t.name));
-      item.appendChild(el("div", "thm-stmt", t.statement));
-      if (t.doc) item.appendChild(el("div", "thm-doc", t.doc));
-      if (t.axioms && t.axioms.length) {
-        const ax = el("div", "thm-axioms");
-        t.axioms.forEach((a) => ax.appendChild(el("span", "axiom-chip", a)));
-        item.appendChild(ax);
+  function renderPanel() {
+    const host = $("#panel");
+    host.classList.toggle("hidden", !panel.open);
+    $("#panelSash").classList.toggle("hidden", !panel.open);
+    if (!panel.open) return;
+    const tabs = $("#panelTabs");
+    tabs.innerHTML = "";
+    const counts = Diagnostics.count();
+    panel.tabs.forEach((t) => {
+      const tab = el("button",
+        "wb-panel-tab" + (t.id === panel.active ? " active" : ""), t.title);
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", String(t.id === panel.active));
+      if (t.id === "problems" && counts.errors + counts.warnings > 0) {
+        tab.appendChild(el("span", "wb-badge" +
+          (counts.errors ? " err" : " warn"),
+          String(counts.errors + counts.warnings)));
       }
-      item.onclick = () => {
-        state.selectedTheorem = t.name;
-        gotoSpan(t.span);
-        showProofTree(t.name);
-        renderTheorems(theorems);
-        switchUtil("proof");
-      };
-      list.appendChild(item);
+      tab.onclick = () => showPanel(t.id, true);
+      tabs.appendChild(tab);
     });
-    const dot = (k, c) =>
-      `<span style="color:${c}">${counts[k] || 0}</span>`;
-    $("#thmCounts").innerHTML =
-      dot("proven", "var(--ok)") + dot("symbolic", "var(--sym)") +
-      dot("numeric", "var(--num)") + dot("heuristic", "var(--heur)");
+    tabs.appendChild(el("span", "wb-panel-spacer"));
+    const kill = el("button", "wb-icon-btn", "×");
+    kill.title = "Close panel";
+    kill.setAttribute("aria-label", "Close panel");
+    kill.onclick = () => togglePanel();
+    tabs.appendChild(kill);
+    $$(".wb-panel-view").forEach((v) =>
+      v.classList.toggle("hidden", v.dataset.panel !== panel.active));
+    if (panel.active === "problems") renderProblems();
+    if (panel.active === "terminal") term.ensure();
   }
 
-  /* ===================================================================
-   * Proof explorer
-   *
-   * The recorded proof, step by step, plus — for any goal in it — which
-   * library results actually apply to it. Every suggestion has been checked
-   * against the conditions the tactic itself enforces, so it will apply;
-   * it is still only a suggestion, and running the tactic is what puts the
-   * result through the kernel.
-   * =================================================================== */
-  function showProofTree(name) {
-    const panel = $("#proofBody");
-    const title = $("#proofTitle");
-    if (!panel) return;
-    const trace = state.lastCheck && state.lastCheck.traces &&
-      state.lastCheck.traces[name];
-    if (title) title.textContent = name ? "Proof · " + name : "Proof";
-    panel.innerHTML = "";
-    if (!trace || !trace.length) {
-      panel.appendChild(el("div", "empty-hint",
-        "No recorded proof steps (term-style or imported)."));
+  /* ---------------- problems ---------------- */
+  function renderProblems() {
+    const host = $("#panelProblems");
+    host.innerHTML = "";
+    const all = Diagnostics.all();
+    if (!all.size) {
+      host.appendChild(el("div", "wb-empty", "No problems detected."));
       return;
     }
-    const tree = buildProofTree(trace);
-    const container = el("div", "proof-tree");
-    if (tree) container.appendChild(renderProofNode(tree));
-    panel.appendChild(container);
-  }
-
-  function buildProofTree(trace) {
-    const byGoal = {};
-    const nodes = [];
-    trace.forEach((step) => {
-      const node = {
-        goal_id: step.goal_id, tactic: step.tactic, rule: step.rule,
-        target: step.before_target, hyps: step.before_hyps || [],
-        after: step.after_goals || [], children: [],
-      };
-      if (byGoal[step.goal_id]) byGoal[step.goal_id].children.push(node);
-      byGoal[step.goal_id] = node;
-      nodes.push(node);
-    });
-    trace.forEach((step, i) => {
-      const node = nodes[i];
-      (step.after_goals || []).forEach((g) => {
-        const child = byGoal[g];
-        if (child && child !== node && !node.children.includes(child))
-          node.children.push(child);
+    all.forEach((diags, path) => {
+      const group = el("div", "wb-prob-file");
+      group.appendChild(el("div", "wb-prob-head", path));
+      diags.forEach((d) => {
+        const row = el("div", "wb-prob-row");
+        row.appendChild(el("span",
+          "wb-prob-sev " + d.severity, d.severity === "error" ? "✕" : "▲"));
+        row.appendChild(el("span", "wb-prob-msg", d.message));
+        row.appendChild(el("span", "wb-prob-loc",
+          d.span[0] + ":" + ((d.span[1] || 0) + 1)));
+        row.tabIndex = 0;
+        const jump = () => openFile(path).then(() => {
+          const entry = editors.get(path);
+          if (entry) entry.editor.revealLine(d.span[0], (d.span[1] || 0) + 1);
+        });
+        row.onclick = jump;
+        row.onkeydown = (ev) => {
+          if (ev.key === "Enter") { ev.preventDefault(); jump(); }
+        };
+        group.appendChild(row);
       });
+      host.appendChild(group);
     });
-    return nodes[0];
   }
 
-  function ruleLabel(rule) {
-    if (!rule) return "";
-    if (rule.startsWith("oracle:")) return rule.split(":")[1];
-    return rule;
-  }
+  Diagnostics.onChange(() => {
+    renderPanel();
+    editors.forEach((entry, path) =>
+      entry.editor.setDiagnostics(Diagnostics.forPath(path)));
+    renderStatusbar();
+  });
 
-  /** Ask what applies to one node's goal and show it under that node. */
-  async function askSuggestions(node, wrap) {
-    let box = wrap.querySelector(":scope > .suggest-box");
-    if (box) { box.remove(); return; }
-    box = el("div", "suggest-box");
-    box.appendChild(el("div", "suggest-loading", "Looking…"));
-    wrap.insertBefore(box, wrap.querySelector(".pnode-children") || null);
-    const r = await api("POST", "/api/suggest", {
-      goal: node.target,
-      hypotheses: (node.hyps || []).map((h) => [h.name, h.type]),
-      limit: 8,
-    });
-    box.innerHTML = "";
-    box.appendChild(suggestionList(r, node.target));
-  }
-
-  /** The free-form explorer at the top of the pane. */
-  async function exploreGoal() {
-    const goal = ($("#proofGoal").value || "").trim();
-    if (!goal) return;
-    const panel = $("#proofBody");
-    panel.innerHTML = "";
-    const head = el("div", "suggest-head");
-    head.appendChild(el("span", "pnode-goal", "⊢ " + goal));
-    panel.appendChild(head);
-    const box = el("div", "suggest-box");
-    box.appendChild(el("div", "suggest-loading", "Looking…"));
-    panel.appendChild(box);
-    const r = await api("POST", "/api/suggest", { goal, limit: 10 });
-    box.innerHTML = "";
-    box.appendChild(suggestionList(r, goal));
-  }
-
-  function suggestionList(r, goal) {
-    const list = el("div", "suggest-list");
-    if (!r || r.ok === false) {
-      list.appendChild(el("div", "suggest-empty",
-        (r && r.message) || "Could not read that goal."));
-      return list;
-    }
-    const items = r.suggestions || [];
-    if (!items.length) {
-      list.appendChild(el("div", "suggest-empty",
-        "No library result applies to this goal."));
-      return list;
-    }
-    items.forEach((s) => {
-      const row = el("div", "suggest-item");
-      const tac = el("code", "suggest-tactic", s.tactic);
-      row.appendChild(tac);
-      const meta = el("div", "suggest-meta");
-      meta.appendChild(el("span", "suggest-name", s.title));
-      if (s.status)
-        meta.appendChild(el("span", "status-chip " + s.status, STATUS_TEXT[s.status] || s.status));
-      meta.appendChild(el("span", "suggest-why",
-        s.side_goals ? `${s.why} (${s.side_goals} left)` : s.why));
-      row.appendChild(meta);
-      row.appendChild(el("div", "suggest-statement", s.statement));
-      row.title = "Insert this tactic at the caret";
-      row.onclick = () => insertAtCaret(s.tactic);
-      list.appendChild(row);
-    });
-    return list;
-  }
-
-  const STATUS_TEXT = {
-    proven: "✓ Formally Proven", symbolic: "✓ Symbolically Verified",
-    numeric: "≈ Numerically Verified", heuristic: "⚠ Heuristic Result",
+  /* ---------------- output channel ---------------- */
+  const output = {
+    write(text, cls) {
+      const host = $("#panelOutput");
+      const block = el("pre", "wb-out" + (cls ? " " + cls : ""), text);
+      host.appendChild(block);
+      host.scrollTop = host.scrollHeight;
+    },
+    clear() { $("#panelOutput").innerHTML = ""; },
   };
 
-  function renderProofNode(node) {
-    const wrap = el("div", "pnode");
-    const head = el("div", "pnode-head");
-    const toggle = el("span", "pnode-toggle", node.children.length ? "▾" : "·");
-    head.appendChild(toggle);
-    if (node.rule) head.appendChild(el("span", "pnode-rule", ruleLabel(node.rule)));
-    head.appendChild(el("span", "pnode-tactic", node.tactic || "(open)"));
-    const ask = el("button", "pnode-ask", "?");
-    ask.title = "Which results apply to this goal?";
-    ask.onclick = (e) => {
-      e.stopPropagation();
-      askSuggestions(node, wrap);
-    };
-    head.appendChild(ask);
-    wrap.appendChild(head);
-    // the context a tactic sees, not just the target
-    if (node.hyps && node.hyps.length) {
-      const ctx = el("div", "pnode-hyps");
-      node.hyps.forEach((h) =>
-        ctx.appendChild(el("div", "pnode-hyp", `${h.name} : ${h.type}`)));
-      wrap.appendChild(ctx);
-    }
-    wrap.appendChild(el("div", "pnode-goal", "⊢ " + node.target));
-    if (node.children.length) {
-      const kids = el("div", "pnode-children");
-      node.children.forEach((c) => kids.appendChild(renderProofNode(c)));
-      wrap.appendChild(kids);
-      head.onclick = () => {
-        wrap.classList.toggle("collapsed");
-        toggle.textContent = wrap.classList.contains("collapsed") ? "▸" : "▾";
-      };
-    }
-    return wrap;
-  }
+  /* =================================================================
+   * Terminal — a real shell over the PTY sessions (server build)
+   * ================================================================= */
+  const ESC = "\x1b";
+  const term = {
+    sessions: [],
+    active: null,
+    timer: null,
 
-  /* ---- plots ---- */
-  function renderPlots(plots) {
-    const panel = $("#plotPanel");
-    panel.innerHTML = "";
-    if (!plots.length) {
-      panel.appendChild(el("div", "empty-hint", "No plots in this file."));
-      return;
-    }
-    plots.forEach((spec, idx) => {
-      if (spec.error) {
-        panel.appendChild(el("div", "empty-hint", "Plot error: " + spec.error));
+    supported() { return state.caps && state.caps.terminal; },
+
+    async ensure() {
+      const screen = $("#termScreen");
+      if (!state.caps) {
+        screen.innerHTML = "";
+        screen.appendChild(el("div", "wb-empty",
+          "Detecting what this machine can do…"));
         return;
       }
-      const item = el("div", "plot-item");
-      const canvas = el("canvas");
-      canvas.width = 560; canvas.height = 320;
-      item.appendChild(canvas);
-      const readout = el("div", "plot-readout", "");
-      item.appendChild(readout);
-      panel.appendChild(item);
-      drawPlot(canvas, spec, readout);
-    });
-  }
+      if (!this.supported()) {
+        screen.innerHTML = "";
+        screen.appendChild(el("div", "wb-empty",
+          "There is no operating system to give a shell to in the browser " +
+          "build. Run the local server build (pip install epsilon-math; " +
+          "epsilon serve) for real terminals. The Debug Console offers a " +
+          "Python session here."));
+        $("#termInputRow").classList.add("hidden");
+        return;
+      }
+      $("#termInputRow").classList.remove("hidden");
+      if (!this.sessions.length) await this.create();
+      this.renderTabs();
+      this.startPolling();
+    },
 
-  function drawPlot(canvas, spec, readout) {
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.clientWidth || 560, H = 320;
-    canvas.width = W * dpr; canvas.height = H * dpr;
-    canvas.style.height = H + "px";
-    const ctx = canvas.getContext("2d");
-    ctx.scale(dpr, dpr);
-    const css = getComputedStyle(document.documentElement);
-    const fg = css.getPropertyValue("--fg-dim").trim();
-    const line = css.getPropertyValue("--glass-border").trim();
-    const colors = ["#7c78ff", "#38d6c8", "#ffc861", "#ff7a90", "#79c0ff"];
+    async create() {
+      const r = await api("POST", "/api/terminal");
+      if (!r || !r.id) return;
+      this.sessions.push({ id: r.id, name: "bash " + r.id.slice(1),
+                           cursor: 0, lines: [""], dead: false });
+      this.active = r.id;
+      await api("POST", "/api/terminal/" + r.id + "/resize",
+                { rows: 24, cols: this.cols() });
+      this.renderTabs();
+      this.renderScreen();
+    },
 
-    // bounds
-    let xmin = spec.lo != null ? spec.lo : -10, xmax = spec.hi != null ? spec.hi : 10;
-    let ymin = Infinity, ymax = -Infinity;
-    spec.series.forEach((s) =>
-      s.y.forEach((v) => {
-        if (v != null && isFinite(v)) { ymin = Math.min(ymin, v); ymax = Math.max(ymax, v); }
-      })
-    );
-    if (!isFinite(ymin)) { ymin = -1; ymax = 1; }
-    if (ymin === ymax) { ymin -= 1; ymax += 1; }
-    const pad = (ymax - ymin) * 0.1; ymin -= pad; ymax += pad;
-    const pl = 8, pr = 8, pt = 8, pb = 8;
-    const X = (x) => pl + ((x - xmin) / (xmax - xmin)) * (W - pl - pr);
-    const Y = (y) => pt + (1 - (y - ymin) / (ymax - ymin)) * (H - pt - pb);
+    cols() {
+      const screen = $("#termScreen");
+      return Math.max(20, Math.floor(((screen && screen.clientWidth) || 640) / 7.2));
+    },
 
-    ctx.clearRect(0, 0, W, H);
-    // grid
-    ctx.strokeStyle = line; ctx.lineWidth = 1; ctx.font = "10px ui-monospace";
-    ctx.fillStyle = fg;
-    for (let g = 0; g <= 4; g++) {
-      const gx = pl + (g / 4) * (W - pl - pr);
-      ctx.globalAlpha = 0.4;
-      ctx.beginPath(); ctx.moveTo(gx, pt); ctx.lineTo(gx, H - pb); ctx.stroke();
-      const gy = pt + (g / 4) * (H - pt - pb);
-      ctx.beginPath(); ctx.moveTo(pl, gy); ctx.lineTo(W - pr, gy); ctx.stroke();
-      ctx.globalAlpha = 1;
-    }
-    // axes at 0
-    ctx.strokeStyle = fg; ctx.globalAlpha = 0.6; ctx.lineWidth = 1.2;
-    if (0 >= ymin && 0 <= ymax) { ctx.beginPath(); ctx.moveTo(pl, Y(0)); ctx.lineTo(W - pr, Y(0)); ctx.stroke(); }
-    if (0 >= xmin && 0 <= xmax) { ctx.beginPath(); ctx.moveTo(X(0), pt); ctx.lineTo(X(0), H - pb); ctx.stroke(); }
-    ctx.globalAlpha = 1;
-    // series
-    spec.series.forEach((s, si) => {
-      ctx.strokeStyle = colors[si % colors.length];
-      ctx.lineWidth = 2; ctx.beginPath();
-      let started = false;
-      s.x.forEach((x, i) => {
-        const y = s.y[i];
-        if (y == null || !isFinite(y)) { started = false; return; }
-        const px = X(x), py = Y(y);
-        if (!started) { ctx.moveTo(px, py); started = true; } else ctx.lineTo(px, py);
-      });
-      ctx.stroke();
-    });
-    // legend
-    spec.series.forEach((s, si) => {
-      ctx.fillStyle = colors[si % colors.length];
-      ctx.fillRect(W - 90, 10 + si * 15, 10, 3);
-      ctx.fillStyle = fg;
-      ctx.fillText(s.label || "f", W - 76, 14 + si * 15);
-    });
-    // crosshair
-    canvas.onmousemove = (e) => {
-      const rect = canvas.getBoundingClientRect();
-      const mx = e.clientX - rect.left;
-      const x = xmin + ((mx - pl) / (W - pl - pr)) * (xmax - xmin);
-      const s0 = spec.series[0];
-      let closest = null, cd = Infinity;
-      s0.x.forEach((xx, i) => {
-        const d = Math.abs(xx - x);
-        if (d < cd && s0.y[i] != null) { cd = d; closest = { x: xx, y: s0.y[i] }; }
-      });
-      if (closest)
-        readout.textContent = `x=${closest.x.toFixed(3)}  ${s0.label || "f"}=${closest.y.toFixed(4)}`;
-    };
-  }
+    session() { return this.sessions.find((s) => s.id === this.active); },
 
-  /* ---- inspector ---- */
-  function renderInspector(results) {
-    const panel = $("#inspectorResults");
-    panel.innerHTML = "";
-    const rel = results.filter((r) => r.kind === "check" || r.kind === "eval");
-    const meta = el("div", "inspector-item");
-    meta.innerHTML = `<span class="ik">SESSION</span><br>${esc(state.meta.brand ||
-      "Epsilon")} ${esc(state.meta.version || "")}`;
-    panel.appendChild(meta);
-    if (!rel.length) {
-      panel.appendChild(el("div", "empty-hint",
-        "#check / #eval outputs will appear here."));
-      return;
-    }
-    rel.forEach((r) => {
-      const item = el("div", "inspector-item");
-      item.innerHTML = `<span class="ik">${r.kind.toUpperCase()}</span><br>${esc(r.message || "")}`;
-      panel.appendChild(item);
-    });
-  }
+    async kill(id) {
+      await api("DELETE", "/api/terminal/" + id);
+      this.sessions = this.sessions.filter((s) => s.id !== id);
+      if (this.active === id) {
+        this.active = this.sessions.length
+          ? this.sessions[this.sessions.length - 1].id : null;
+      }
+      this.renderTabs();
+      this.renderScreen();
+    },
 
-  /* ===================================================================
-   * Dependency graph
-   *
-   * A continuously relaxing force simulation, the way a note-graph view
-   * behaves: repulsion pushes the whole set apart, springs hold linked
-   * results together, and the layout keeps settling for as long as it is
-   * moving instead of freezing after a fixed number of passes. Labels are
-   * drawn only where they can be read - the focused node's neighbourhood,
-   * or everything once you have zoomed in - so the picture never becomes
-   * a wall of overlapping text.
-   * =================================================================== */
-  const graphCanvas = $("#graphCanvas");
-  // `links` is derived from `edges` in buildAdjacency, but drawing can
-  // happen before any check has produced a graph — opening the pane,
-  // switching a tab or toggling the theme all draw. Every shape this
-  // ever holds carries all three, so a draw before the first check is
-  // an empty picture rather than a crash.
-  const emptyGraph = () => ({ nodes: [], edges: [], links: [] });
-  let graphData = emptyGraph();
-  const graphView = { x: 0, y: 0, scale: 1 };
-  const graphSim = {
-    running: false, frame: null, alpha: 0,
-    hover: null, selected: null, drag: null,
-    panning: false, px: 0, py: 0, moved: false,
-    adjacency: new Map(),
-  };
-
-  const GRAPH_KIND_COLOR = {
-    axiom: "--heur", definition: "--accent-2", inductive: "--sym",
-  };
-
-  function graphColor(n, css) {
-    const statusVar = { proven: "--ok", symbolic: "--sym",
-                        numeric: "--num", heuristic: "--heur" }[n.status];
-    const v = statusVar || GRAPH_KIND_COLOR[n.kind] || "--fg-dim";
-    return css.getPropertyValue(v).trim() || "#888";
-  }
-
-  let graphRaw = { nodes: [], edges: [] };
-  const graphFilters = { theorem: true, axiom: true, definition: false,
-                         isolated: false };
-
-  function renderDeps(deps) {
-    graphRaw = { nodes: deps.nodes || [], edges: deps.edges || [] };
-    applyGraphFilters();
-  }
-
-  /** Derive the drawn graph from the raw one. Type aliases such as ℝ are
-   *  definitions that nearly every axiom mentions, so including them turns
-   *  the picture into a star around one hub; they are off by default. */
-  function applyGraphFilters() {
-    const keepKind = (n) => {
-      if (n.kind === "theorem") return graphFilters.theorem;
-      if (n.kind === "axiom") return graphFilters.axiom;
-      return graphFilters.definition;
-    };
-    const kept = new Set(graphRaw.nodes.filter(keepKind).map((n) => n.name));
-    const edges = graphRaw.edges.filter(
-      (e) => kept.has(e.from) && kept.has(e.to));
-    const linked = new Set();
-    edges.forEach((e) => { linked.add(e.from); linked.add(e.to); });
-    const nodes = graphRaw.nodes.filter(
-      (n) => kept.has(n.name) &&
-             (graphFilters.isolated || linked.has(n.name)));
-    const visible = new Set(nodes.map((n) => n.name));
-
-    const prev = new Map(graphData.nodes.map((n) => [n.name, n]));
-    graphData = { nodes: nodes.map((n) => ({ ...n })),
-                  edges: edges.filter((e) => visible.has(e.from) &&
-                                             visible.has(e.to)),
-                  links: [] };
-    renderGraphLegend();
-    const R = 260;
-    graphData.nodes.forEach((n, i) => {
-      const old = prev.get(n.name);
-      if (old) { n.x = old.x; n.y = old.y; n.vx = 0; n.vy = 0; return; }
-      // seed on a ring: a circle spreads better than a point cloud
-      const a = (i / Math.max(1, graphData.nodes.length)) * Math.PI * 2;
-      n.x = Math.cos(a) * R + (i % 7) * 3;
-      n.y = Math.sin(a) * R + (i % 5) * 3;
-      n.vx = 0; n.vy = 0;
-    });
-    buildAdjacency();
-    graphSim.alpha = 1;
-    if ($('.act[data-view="graph"]').classList.contains("active")) startGraph();
-  }
-
-
-  function renderGraphLegend() {
-    const box = $("#graphLegend");
-    if (!box) return;
-    const css = getComputedStyle(document.documentElement);
-    const rows = [
-      ["--ok", "proven"], ["--sym", "symbolic"], ["--num", "numeric"],
-      ["--heur", "axiom / heuristic"], ["--accent-2", "definition"],
-    ];
-    box.innerHTML = "";
-    rows.forEach(([v, label]) => {
-      const s = el("span");
-      const dot = el("i");
-      dot.style.background = css.getPropertyValue(v).trim();
-      s.appendChild(dot);
-      s.appendChild(document.createTextNode(label));
-      box.appendChild(s);
-    });
-    const s = el("span", null, `${graphData.nodes.length} shown`);
-    box.appendChild(s);
-  }
-
-  function focusGraphNode(query) {
-    const q = query.trim().toLowerCase();
-    if (!q) { graphSim.selected = null; drawGraph(); return; }
-    const hit = graphData.nodes.find(
-      (n) => n.name.toLowerCase().includes(q) ||
-             (n.title || "").toLowerCase().includes(q));
-    if (!hit) return;
-    graphSim.selected = hit.name;
-    // centre the view on it without changing the zoom
-    graphView.x = -hit.x * graphView.scale;
-    graphView.y = -hit.y * graphView.scale;
-    drawGraph();
-  }
-
-  function wireGraphFilters() {
-    const map = { gfTheorem: "theorem", gfAxiom: "axiom",
-                  gfDefinition: "definition", gfIsolated: "isolated" };
-    Object.entries(map).forEach(([id, key]) => {
-      const box = $("#" + id);
-      if (!box) return;
-      box.checked = graphFilters[key];
-      box.onchange = () => {
-        graphFilters[key] = box.checked;
-        applyGraphFilters();
-        graphSim.alpha = 1;
-        startGraph();
-        setTimeout(fitGraphView, 700);
+    startPolling() {
+      if (this.timer) return;
+      const poll = async () => {
+        const s = this.session();
+        if (s && panel.open && panel.active === "terminal" && !s.dead) {
+          try {
+            const r = await api("GET",
+              "/api/terminal/" + s.id + "?since=" + s.cursor);
+            if (r && typeof r.cursor === "number") {
+              if (r.data) this.feed(s, r.data);
+              s.cursor = r.cursor;
+              if (!r.alive && !s.dead) {
+                s.dead = true;
+                this.feed(s, "\n[shell exited: " + r.exit_code + "]\n");
+              }
+            }
+          } catch (e) { /* next poll */ }
+        }
+        this.timer = setTimeout(poll, 140);
       };
+      poll();
+    },
+
+    /** PTY bytes through a small line discipline: SGR colours kept, CR
+        overwrites the line, other control sequences dropped. Full-screen
+        curses programs are out of scope, and that is stated, not hidden. */
+    feed(s, data) {
+      let text = data.replace(new RegExp(ESC + "\\][^\\x07]*(\\x07|" + ESC + "\\\\)", "g"), "");
+      let line = s.lines.pop() || "";
+      let i = 0;
+      while (i < text.length) {
+        const ch = text[i];
+        if (ch === "\n") { s.lines.push(line); line = ""; i += 1; continue; }
+        if (ch === "\r") { line = ""; i += 1; continue; }
+        if (ch === "\b") { line = line.slice(0, -1); i += 1; continue; }
+        if (ch === "\x07") { i += 1; continue; }
+        if (ch === ESC) {
+          const m = /^\[([0-9;?]*)([A-Za-z])/.exec(text.slice(i + 1));
+          if (m) {
+            if (m[2] === "m") line += "\x00[" + m[1] + "m";
+            i += 1 + m[0].length;
+            continue;
+          }
+          i += 2;
+          continue;
+        }
+        line += ch;
+        i += 1;
+      }
+      s.lines.push(line);
+      if (s.lines.length > 2000) s.lines = s.lines.slice(-2000);
+      this.renderScreen();
+    },
+
+    ansiToHtml(line) {
+      const COLORS = ["#3b4048", "#e06c75", "#98c379", "#e5c07b", "#61afef",
+                      "#c678dd", "#56b6c2", "#d4d4d4"];
+      let html = "";
+      let open = false;
+      line.split("\x00").forEach((part, idx) => {
+        if (idx === 0) { html += esc(part); return; }
+        const m = /^\[([0-9;]*)m([\s\S]*)$/.exec(part);
+        if (!m) { html += esc(part); return; }
+        if (open) { html += "</span>"; open = false; }
+        const codes = m[1].split(";").filter(Boolean).map(Number);
+        const styles = [];
+        codes.forEach((c) => {
+          if (c >= 30 && c <= 37) styles.push("color:" + COLORS[c - 30]);
+          if (c >= 90 && c <= 97) styles.push("color:" + COLORS[c - 90]);
+          if (c === 1) styles.push("font-weight:600");
+          if (c === 4) styles.push("text-decoration:underline");
+        });
+        if (styles.length) {
+          html += '<span style="' + styles.join(";") + '">';
+          open = true;
+        }
+        html += esc(m[2]);
+      });
+      if (open) html += "</span>";
+      return html;
+    },
+
+    renderTabs() {
+      const host = $("#termTabs");
+      if (!host) return;
+      host.innerHTML = "";
+      this.sessions.forEach((s) => {
+        const tab = el("button",
+          "wb-term-tab" + (s.id === this.active ? " active" : ""), s.name);
+        tab.onclick = () => { this.active = s.id; this.renderTabs();
+                              this.renderScreen(); this.focusInput(); };
+        const x = el("span", "wb-term-x", "×");
+        x.onclick = (ev) => { ev.stopPropagation(); this.kill(s.id); };
+        tab.appendChild(x);
+        host.appendChild(tab);
+      });
+      const plus = el("button", "wb-icon-btn", "+");
+      plus.title = "New terminal";
+      plus.onclick = () => Commands.execute("terminal.new");
+      host.appendChild(plus);
+    },
+
+    renderScreen() {
+      const screen = $("#termScreen");
+      if (!screen) return;
+      const s = this.session();
+      if (!s) {
+        screen.innerHTML = "";
+        screen.appendChild(el("div", "wb-empty",
+          "No terminal — open one with Terminal → New Terminal."));
+        return;
+      }
+      screen.innerHTML = s.lines.map((l) =>
+        '<div class="wb-term-line">' + (this.ansiToHtml(l) || "&nbsp;") + "</div>")
+        .join("");
+      screen.scrollTop = screen.scrollHeight;
+    },
+
+    async send(data) {
+      const s = this.session();
+      if (!s || s.dead) return;
+      await api("POST", "/api/terminal/" + s.id + "/input", { data });
+    },
+
+    focusInput() {
+      const input = $("#termInput");
+      if (input && this.supported()) input.focus();
+    },
+
+    clear() {
+      const s = this.session();
+      if (s) { s.lines = [""]; this.renderScreen(); }
+      this.send("clear\n");
+    },
+  };
+
+  /* =================================================================
+   * Run — execution flows into the panel, not a separate app
+   * ================================================================= */
+  const runState = { busy: false };
+
+  function canRun() { return RUNNABLE.has(currentLanguage()); }
+  function runDisabledReason() {
+    if (!state.active || SPECIAL.has(state.active)) return "no file is active";
+    const lang = currentLanguage();
+    if (!RUNNABLE.has(lang)) {
+      return (LANGUAGE_LABEL[lang] || lang) + " files are not runnable — " +
+        "Python and C++ are";
+    }
+    if (state.caps && state.caps.run && state.caps.run[lang] === false) {
+      return lang === "cpp"
+        ? "C++ needs a compiler; the browser build has none (use the " +
+          "server build)"
+        : lang + " is not runnable in this environment";
+    }
+    return null;
+  }
+
+  async function runCurrentFile() {
+    const path = state.active;
+    const entry = editors.get(path);
+    if (!entry || runState.busy) return;
+    const language = languageOf(path);
+    if (Settings.get("run.saveBeforeRun") && state.dirty.get(path)) {
+      await saveFile(path);
+    }
+    runState.busy = true;
+    renderRunButton();
+    showPanel("output");
+    output.clear();
+    output.write("▶ " + path + "  (" + LANGUAGE_LABEL[language] + ")", "dim");
+    let r;
+    try {
+      r = await api("POST", "/api/run", {
+        language, code: entry.editor.getValue(),
+        timeout: Settings.get("run.timeout"),
+        filename: path.split("/").pop(),
+      });
+    } finally {
+      runState.busy = false;
+      renderRunButton();
+    }
+    if (r.message) output.write(r.message, "err");
+    if (r.stdout) output.write(r.stdout);
+    if (r.stderr) output.write(r.stderr, "err");
+    if (!r.message && !r.stdout && !r.stderr) output.write("(no output)", "dim");
+    const bits = [];
+    if (r.phase === "compile") bits.push("failed to compile");
+    else if (r.exit_code != null) bits.push("exit " + r.exit_code);
+    if (r.duration_ms != null) bits.push(r.duration_ms + " ms");
+    output.write(bits.join(" · "), r.ok ? "ok" : "err");
+    Diagnostics.set("run", path, r.diagnostics || []);
+    if ((r.diagnostics || []).some((d) => d.severity === "error")) {
+      showPanel("problems");
+    }
+  }
+
+  /* =================================================================
+   * Debug — bdb sessions surfaced in the Run & Debug view
+   * ================================================================= */
+  const dbg = {
+    id: null, cursor: 0, timer: null, stopped: null, path: null,
+
+    reason() {
+      if (!state.caps) return "still loading capabilities";
+      if (currentLanguage() === "cpp") {
+        return "C++ debugging needs a gdb integration that does not exist " +
+          "yet — Python debugging works";
+      }
+      if (currentLanguage() !== "python") return "debugging applies to Python files";
+      if (!state.caps.debug || !state.caps.debug.python) {
+        return "debugging needs a process that can be suspended; the " +
+          "browser build cannot do that — use the server build";
+      }
+      return null;
+    },
+
+    async start() {
+      const path = state.active;
+      const entry = editors.get(path);
+      if (!entry) return;
+      if (Settings.get("run.saveBeforeRun") && state.dirty.get(path)) {
+        await saveFile(path);
+      }
+      this.stop();
+      const r = await api("POST", "/api/debug", {
+        code: entry.editor.getValue(),
+        filename: path.split("/").pop(),
+        breakpoints: state.breakpoints[path] || [],
+      });
+      if (!r || !r.id) return;
+      this.id = r.id;
+      this.cursor = 0;
+      this.path = path;
+      this.stopped = null;
+      $("#dbgLog").innerHTML = "";
+      showPanel("debug");
+      this.log("debugging " + path + " — breakpoints: " +
+        ((state.breakpoints[path] || []).join(", ") || "none"), "dim");
+      renderRunDebug();
+      this.poll();
+    },
+
+    async poll() {
+      if (!this.id) return;
+      let r;
+      try {
+        r = await api("GET", "/api/debug/" + this.id + "?since=" + this.cursor);
+      } catch (e) { r = null; }
+      if (!this.id) return;
+      if (r && r.events) {
+        this.cursor = r.cursor;
+        r.events.forEach((ev) => this.handle(ev));
+      }
+      if (this.id) this.timer = setTimeout(() => this.poll(), 160);
+    },
+
+    handle(ev) {
+      if (ev.event === "output") {
+        this.log(ev.data.replace(/\n$/, ""),
+                 ev.stream === "stderr" ? "err" : "");
+      } else if (ev.event === "stopped") {
+        this.stopped = ev;
+        this.log("⏸ stopped at line " + ev.line + " (" + ev.reason + ")", "warn");
+        const entry = editors.get(this.path);
+        if (entry) {
+          openFile(this.path).then(() => entry.editor.revealLine(ev.line, 1));
+        }
+        renderRunDebug();
+      } else if (ev.event === "eval") {
+        this.log((ev.ok ? "= " : "! ") + ev.value, ev.ok ? "ok" : "err");
+      } else if (ev.event === "exited") {
+        this.log("exited with code " + ev.code, ev.code === 0 ? "ok" : "err");
+        this.id = null;
+        this.stopped = null;
+        renderRunDebug();
+      }
+    },
+
+    command(op, extra) {
+      if (!this.id) return;
+      this.stopped = null;
+      renderRunDebug();
+      api("POST", "/api/debug/" + this.id + "/cmd", { op, ...(extra || {}) });
+    },
+
+    stop() {
+      if (this.timer) clearTimeout(this.timer);
+      if (this.id) api("DELETE", "/api/debug/" + this.id);
+      this.id = null;
+      this.stopped = null;
+      renderRunDebug();
+    },
+
+    log(text, cls) {
+      const host = $("#dbgLog");
+      if (!host || text === "") return;
+      host.appendChild(el("div", "wb-out " + (cls || ""), text));
+      host.scrollTop = host.scrollHeight;
+    },
+  };
+
+  /* the Run & Debug sidebar view */
+  function renderRunDebug() {
+    const host = $("#runDebugBody");
+    if (!host) return;
+    host.innerHTML = "";
+
+    const controls = el("div", "wb-dbg-controls");
+    const btn = (label, title, run, disabled) => {
+      const b = el("button", "wb-btn", label);
+      b.title = title;
+      b.disabled = !!disabled;
+      b.onclick = run;
+      controls.appendChild(b);
+    };
+    if (!dbg.id) {
+      const reason = dbg.reason();
+      btn("▶ Start Debugging", reason || "F6",
+          () => Commands.execute("debug.start"), !!reason);
+      if (reason) controls.appendChild(el("div", "wb-hint", reason));
+    } else if (dbg.stopped) {
+      btn("⏵", "Continue (F5)", () => dbg.command("continue"));
+      btn("⤼", "Step Over (F10)", () => dbg.command("next"));
+      btn("⤵", "Step Into (F11)", () => dbg.command("step"));
+      btn("⤴", "Step Out (Shift+F11)", () => dbg.command("return"));
+      btn("⏹", "Stop (Shift+F6)", () => dbg.stop());
+    } else {
+      controls.appendChild(el("span", "wb-hint", "running…"));
+      btn("⏹", "Stop", () => dbg.stop());
+    }
+    host.appendChild(controls);
+
+    if (dbg.stopped) {
+      const vars = el("div", "wb-dbg-section");
+      vars.appendChild(el("div", "wb-side-head", "Variables"));
+      Object.entries(dbg.stopped.locals || {}).forEach(([k, v]) => {
+        const row = el("div", "wb-dbg-var");
+        row.appendChild(el("span", "wb-dbg-k", k));
+        row.appendChild(el("span", "wb-dbg-v", v));
+        vars.appendChild(row);
+      });
+      host.appendChild(vars);
+
+      const stack = el("div", "wb-dbg-section");
+      stack.appendChild(el("div", "wb-side-head", "Call Stack"));
+      (dbg.stopped.stack || []).forEach((f) => {
+        stack.appendChild(el("div", "wb-dbg-frame",
+          f.name + "  :" + f.line));
+      });
+      host.appendChild(stack);
+
+      const evalRow = el("div", "wb-dbg-evalrow");
+      const input = el("input", "wb-input");
+      input.placeholder = "evaluate in this frame…";
+      input.onkeydown = (ev) => {
+        if (ev.key === "Enter" && input.value.trim()) {
+          dbg.log("? " + input.value, "dim");
+          dbg.command("eval", { expr: input.value });
+          input.value = "";
+        }
+      };
+      evalRow.appendChild(input);
+      host.appendChild(evalRow);
+    }
+
+    const bps = el("div", "wb-dbg-section");
+    bps.appendChild(el("div", "wb-side-head", "Breakpoints"));
+    let any = false;
+    Object.entries(state.breakpoints).forEach(([path, lines]) => {
+      (lines || []).forEach((line) => {
+        any = true;
+        const row = el("div", "wb-dbg-bp");
+        row.appendChild(el("span", "wb-dbg-bpdot"));
+        row.appendChild(el("span", null, path + ":" + line));
+        row.onclick = () => openFile(path).then(() => {
+          const entry = editors.get(path);
+          if (entry) entry.editor.revealLine(line, 1);
+        });
+        const x = el("button", "wb-icon-btn", "×");
+        x.title = "Remove breakpoint";
+        x.onclick = (ev) => {
+          ev.stopPropagation();
+          const entry = editors.get(path);
+          if (entry) entry.editor.toggleBreakpoint(line);
+          else {
+            state.breakpoints[path] =
+              (state.breakpoints[path] || []).filter((l) => l !== line);
+            writeJSON("epsilon.breakpoints.v1", state.breakpoints);
+            renderRunDebug();
+          }
+        };
+        row.appendChild(x);
+        bps.appendChild(row);
+      });
     });
-    const search = $("#graphSearch");
-    if (search) {
-      let t = null;
-      search.addEventListener("input", () => {
-        clearTimeout(t);
-        t = setTimeout(() => focusGraphNode(search.value), 180);
+    if (!any) bps.appendChild(el("div", "wb-hint",
+      "Click in the editor gutter, left of a line number, to set one."));
+    host.appendChild(bps);
+  }
+
+  /* =================================================================
+   * Search view (find & replace in files)
+   * ================================================================= */
+  const searchState = { query: "", replace: "", regex: false, case: false,
+                        word: false, results: [], truncated: false };
+
+  async function runSearch() {
+    if (!searchState.query) {
+      searchState.results = [];
+      renderSearchResults();
+      return;
+    }
+    const r = await api("POST", "/api/search", {
+      query: searchState.query, regex: searchState.regex,
+      case: searchState.case, word: searchState.word,
+    });
+    if (r.ok === false) {
+      searchState.results = [];
+      renderSearchResults(r.message);
+      return;
+    }
+    searchState.results = r.results || [];
+    searchState.truncated = !!r.truncated;
+    renderSearchResults();
+  }
+
+  function renderSearchResults(errorMessage) {
+    const host = $("#searchResults");
+    if (!host) return;
+    host.innerHTML = "";
+    if (errorMessage) {
+      host.appendChild(el("div", "wb-hint err", errorMessage));
+      return;
+    }
+    const results = searchState.results;
+    if (!results.length) {
+      host.appendChild(el("div", "wb-empty",
+        searchState.query ? "No results." : "Type to search the workspace."));
+      return;
+    }
+    const byFile = new Map();
+    results.forEach((r) => {
+      if (!byFile.has(r.path)) byFile.set(r.path, []);
+      byFile.get(r.path).push(r);
+    });
+    const summary = el("div", "wb-hint",
+      results.length + " result" + (results.length === 1 ? "" : "s") +
+      " in " + byFile.size + " file" + (byFile.size === 1 ? "" : "s") +
+      (searchState.truncated ? " (truncated at 2000)" : ""));
+    host.appendChild(summary);
+    byFile.forEach((rows, path) => {
+      const group = el("div", "wb-search-file");
+      const head = el("div", "wb-prob-head", path);
+      head.appendChild(el("span", "wb-badge", String(rows.length)));
+      group.appendChild(head);
+      rows.slice(0, 200).forEach((r) => {
+        const row = el("div", "wb-search-row");
+        row.tabIndex = 0;
+        const pre = r.preview;
+        const before = esc(pre.slice(0, r.col));
+        const match = esc(pre.slice(r.col, r.col + r.length));
+        const after = esc(pre.slice(r.col + r.length));
+        row.innerHTML = '<span class="wb-search-ln">' + r.line + "</span>" +
+          '<span class="wb-search-text">' + before +
+          "<mark>" + match + "</mark>" + after + "</span>";
+        const jump = () => openFile(path).then(() => {
+          const entry = editors.get(path);
+          if (entry) {
+            entry.editor.revealLine(r.line, r.col + 1);
+            const at = entry.editor.input.selectionStart;
+            entry.editor.setSelection(at, at + r.length);
+          }
+        });
+        row.onclick = jump;
+        row.onkeydown = (ev) => {
+          if (ev.key === "Enter") { ev.preventDefault(); jump(); }
+        };
+        group.appendChild(row);
+      });
+      host.appendChild(group);
+    });
+  }
+
+  async function replaceAllInFiles() {
+    if (!searchState.query) return;
+    const count = searchState.results.length;
+    if (!count) return;
+    if (!confirm("Replace " + count + " occurrence" +
+        (count === 1 ? "" : "s") + " across the workspace?")) return;
+    const r = await api("POST", "/api/replace", {
+      query: searchState.query, replacement: searchState.replace,
+      regex: searchState.regex, case: searchState.case,
+      word: searchState.word,
+    });
+    if (r.ok === false) return;
+    notify("Replaced " + r.replacements + " occurrences in " +
+      Object.keys(r.files || {}).length + " files", "ok");
+    // reload any open editors whose file changed under them
+    for (const path of Object.keys(r.files || {})) {
+      const entry = editors.get(path);
+      if (entry && !state.dirty.get(path)) {
+        const f = await api("GET", "/api/file?path=" + encodeURIComponent(path));
+        entry.editor.setValue(f.content || "");
+        entry.saved = f.content || "";
+      }
+    }
+    runSearch();
+    refreshGit();
+  }
+
+  /* =================================================================
+   * Source Control view
+   * ================================================================= */
+  const git = { status: null, log: [] };
+
+  async function refreshGit() {
+    if (!state.caps || !state.caps.git) { renderGit(); return; }
+    git.status = await api("GET", "/api/git/status");
+    if (git.status && git.status.repo) {
+      const lg = await api("GET", "/api/git/log?limit=12");
+      git.log = (lg && lg.entries) || [];
+    }
+    renderGit();
+    renderStatusbar();
+  }
+
+  function renderGit() {
+    const host = $("#scmBody");
+    if (!host) return;
+    host.innerHTML = "";
+    if (!state.caps || !state.caps.git) {
+      host.appendChild(el("div", "wb-empty",
+        "Git is not available in the browser build — the server build " +
+        "(epsilon serve) has full source control."));
+      return;
+    }
+    const st = git.status;
+    if (!st) { host.appendChild(el("div", "wb-empty", "…")); return; }
+    if (!st.repo) {
+      const b = el("button", "wb-btn wide", "Initialize Repository");
+      b.onclick = async () => {
+        await api("POST", "/api/git/init");
+        refreshGit();
+      };
+      host.appendChild(b);
+      return;
+    }
+
+    const msgRow = el("div", "wb-scm-commitrow");
+    const msg = el("textarea", "wb-input wb-scm-msg");
+    msg.placeholder = "Commit message (Ctrl+Enter to commit staged)";
+    msg.rows = 2;
+    msg.value = git.pendingMessage || "";
+    msg.oninput = () => { git.pendingMessage = msg.value; };
+    msg.onkeydown = (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && ev.key === "Enter") {
+        ev.preventDefault();
+        commitStaged();
+      }
+    };
+    msgRow.appendChild(msg);
+    const commitBtn = el("button", "wb-btn wide", "✓ Commit");
+    commitBtn.onclick = commitStaged;
+    msgRow.appendChild(commitBtn);
+    host.appendChild(msgRow);
+
+    const staged = (st.changes || []).filter((c) => c.staged);
+    const unstaged = (st.changes || []).filter((c) => c.unstaged || !c.staged);
+    const section = (title, items, stagedList) => {
+      if (!items.length) return;
+      const box = el("div", "wb-scm-section");
+      const head = el("div", "wb-side-head", title);
+      head.appendChild(el("span", "wb-badge", String(items.length)));
+      box.appendChild(head);
+      items.forEach((c) => {
+        const row = el("div", "wb-scm-row");
+        row.appendChild(el("span", "wb-scm-status s-" +
+          (c.status || "M").slice(0, 1), (c.status || "M").slice(0, 2)));
+        const name = el("span", "wb-scm-path", c.path);
+        name.title = "Show diff";
+        name.onclick = () => showDiff(c.path, stagedList);
+        row.appendChild(name);
+        const act = el("button", "wb-icon-btn", stagedList ? "−" : "+");
+        act.title = stagedList ? "Unstage" : "Stage";
+        act.onclick = async () => {
+          await api("POST", "/api/git/" + (stagedList ? "unstage" : "stage"),
+                    { paths: [c.path] });
+          refreshGit();
+        };
+        row.appendChild(act);
+        if (!stagedList) {
+          const undo = el("button", "wb-icon-btn", "↺");
+          undo.title = "Discard changes";
+          undo.onclick = async () => {
+            if (!confirm("Discard changes to " + c.path + "? This cannot " +
+                         "be undone.")) return;
+            await api("POST", "/api/git/discard", { paths: [c.path] });
+            const entry = editors.get(c.path);
+            if (entry) {
+              const f = await api("GET",
+                "/api/file?path=" + encodeURIComponent(c.path));
+              if (f && f.content != null) {
+                entry.editor.setValue(f.content);
+                entry.saved = f.content;
+                state.dirty.set(c.path, false);
+                EpsilonPanes.setDirty(c.path, false);
+              }
+            }
+            refreshGit();
+          };
+          row.appendChild(undo);
+        }
+        box.appendChild(row);
+      });
+      host.appendChild(box);
+    };
+    section("Staged Changes", staged, true);
+    section("Changes", unstaged, false);
+    if (!st.changes.length) {
+      host.appendChild(el("div", "wb-hint", "Nothing to commit — clean."));
+    }
+
+    if (git.log.length) {
+      const box = el("div", "wb-scm-section");
+      box.appendChild(el("div", "wb-side-head", "History"));
+      git.log.forEach((entry) => {
+        const row = el("div", "wb-scm-log");
+        row.appendChild(el("code", "wb-scm-hash", entry.hash));
+        row.appendChild(el("span", "wb-scm-sub", entry.subject));
+        row.title = entry.author + ", " + entry.date;
+        box.appendChild(row);
+      });
+      host.appendChild(box);
+    }
+  }
+
+  async function commitStaged() {
+    const message = (git.pendingMessage || "").trim();
+    if (!message) { notify("A commit needs a message", "warn"); return; }
+    const r = await api("POST", "/api/git/commit", { message });
+    if (r.ok) {
+      git.pendingMessage = "";
+      notify("Committed " + r.hash, "ok");
+      refreshGit();
+    }
+  }
+
+  async function showDiff(path, staged) {
+    const r = await api("GET", "/api/git/diff?path=" +
+      encodeURIComponent(path) + (staged ? "&staged=true" : ""));
+    if (!r.ok) return;
+    openSpecial("diff://" + path, "Δ " + path.split("/").pop(), (host) => {
+      const pre = el("pre", "wb-diff");
+      (r.diff || "(no differences)").split("\n").forEach((line) => {
+        const cls = line.startsWith("+") && !line.startsWith("+++") ? "add"
+          : line.startsWith("-") && !line.startsWith("---") ? "del"
+          : line.startsWith("@@") ? "hunk" : "";
+        pre.appendChild(el("div", "wb-diff-line " + cls, line || " "));
+      });
+      host.appendChild(pre);
+    }, { refresh: true });
+  }
+
+  /* =================================================================
+   * Special tabs (settings, shortcuts, diffs) — views in the editor area
+   * ================================================================= */
+  function openSpecial(id, title, build, opts = {}) {
+    if (SPECIAL.has(id) && !opts.refresh) {
+      EpsilonPanes.openView(id);
+      state.active = id;
+      refreshChrome();
+      return;
+    }
+    let record = SPECIAL.get(id);
+    if (!record) {
+      const host = el("div", "wb-special");
+      record = { title, host };
+      SPECIAL.set(id, record);
+      EpsilonPanes.registerView(id, {
+        title, element: host, closable: true,
+        onShow: () => { state.active = id; refreshChrome(); },
+        onClose: () => SPECIAL.delete(id),
       });
     }
+    record.host.innerHTML = "";
+    build(record.host);
+    EpsilonPanes.openView(id);
+    state.active = id;
+    refreshChrome();
   }
 
-  function buildAdjacency() {
-    const byName = new Map(graphData.nodes.map((n) => [n.name, n]));
-    const adj = new Map(graphData.nodes.map((n) => [n.name, new Set()]));
-    graphData.links = [];
-    graphData.edges.forEach((e) => {
-      const a = byName.get(e.from), b = byName.get(e.to);
-      if (!a || !b || a === b) return;
-      graphData.links.push({ a, b });
-      adj.get(e.from).add(e.to);
-      adj.get(e.to).add(e.from);
-    });
-    graphSim.adjacency = adj;
-    graphData.nodes.forEach((n) => {
-      n.degree = (adj.get(n.name) || new Set()).size;
-      n.r = 4 + Math.min(7, Math.sqrt(n.degree) * 2.1);
-    });
-    graphData.byName = byName;
+  /* =================================================================
+   * Settings UI — a searchable editor-area tab
+   * ================================================================= */
+  function openSettingsUI(filter) {
+    openSpecial("epsilon://settings", "Settings", (host) => {
+      host.classList.add("wb-settings");
+      const top = el("div", "wb-settings-top");
+      const search = el("input", "wb-input");
+      search.placeholder = "Search settings";
+      search.value = filter || "";
+      search.setAttribute("aria-label", "Search settings");
+      top.appendChild(search);
+      host.appendChild(top);
+
+      const layout = el("div", "wb-settings-layout");
+      const nav = el("nav", "wb-settings-nav");
+      const body = el("div", "wb-settings-body");
+      layout.appendChild(nav);
+      layout.appendChild(body);
+      host.appendChild(layout);
+
+      const render = () => {
+        const needle = search.value.trim().toLowerCase();
+        nav.innerHTML = "";
+        body.innerHTML = "";
+        const cats = Settings.categories();
+        const visible = Settings.all().filter((d) =>
+          !needle || (d.title + " " + d.id + " " + (d.description || ""))
+            .toLowerCase().includes(needle));
+        cats.forEach((cat) => {
+          const items = visible.filter((d) => d.category === cat);
+          if (!items.length) return;
+          const link = el("button", "wb-settings-cat", cat);
+          link.onclick = () => {
+            const target = body.querySelector('[data-cat="' + cat + '"]');
+            if (target) target.scrollIntoView({ block: "start" });
+          };
+          nav.appendChild(link);
+          const section = el("section");
+          section.dataset.cat = cat;
+          section.appendChild(el("h2", "wb-settings-h", cat));
+          items.forEach((d) => section.appendChild(settingRow(d)));
+          body.appendChild(section);
+        });
+        if (!visible.length) {
+          body.appendChild(el("div", "wb-empty",
+            "No setting matches “" + search.value + "”."));
+        }
+      };
+      search.oninput = render;
+      render();
+      setTimeout(() => search.focus(), 0);
+    }, { refresh: true });
   }
 
-  function startGraph() {
-    if (graphSim.running) return;
-    graphSim.running = true;
-    const step = () => {
-      if (!graphSim.running) return;
-      if (graphSim.alpha > 0.005) { tickGraph(); graphSim.alpha *= 0.985; }
-      drawGraph();
-      graphSim.frame = requestAnimationFrame(step);
+  function settingRow(d) {
+    const row = el("div", "wb-setting");
+    const label = el("div", "wb-setting-label");
+    label.appendChild(el("span", "wb-setting-title", d.title));
+    if (Settings.isModified(d.id)) {
+      const reset = el("button", "wb-setting-reset", "reset");
+      reset.title = "Back to the default (" + d.default + ")";
+      reset.onclick = () => { Settings.reset(d.id); openSettingsUI(); };
+      label.appendChild(reset);
+    }
+    row.appendChild(label);
+    if (d.description) row.appendChild(el("div", "wb-setting-desc", d.description));
+
+    const value = Settings.get(d.id);
+    let control;
+    if (d.type === "boolean") {
+      control = el("input");
+      control.type = "checkbox";
+      control.checked = !!value;
+      control.onchange = () => Settings.set(d.id, control.checked);
+    } else if (d.type === "enum") {
+      control = el("select", "wb-input");
+      (d.options || []).forEach((opt) => {
+        const o = el("option", null, opt);
+        o.value = opt;
+        if (opt === value) o.selected = true;
+        control.appendChild(o);
+      });
+      control.onchange = () => Settings.set(d.id, control.value);
+    } else {
+      control = el("input", "wb-input");
+      control.type = d.type === "number" ? "number" : "text";
+      control.value = value == null ? "" : value;
+      control.onchange = () => Settings.set(d.id, control.value);
+    }
+    control.setAttribute("aria-label", d.title);
+    const controlRow = el("div", "wb-setting-control");
+    controlRow.appendChild(control);
+    row.appendChild(controlRow);
+    return row;
+  }
+
+  /* =================================================================
+   * Keyboard shortcuts UI — rebind by capturing the next chord
+   * ================================================================= */
+  function openShortcutsUI() {
+    openSpecial("epsilon://shortcuts", "Keyboard Shortcuts", (host) => {
+      host.classList.add("wb-shortcuts");
+      const top = el("div", "wb-settings-top");
+      const search = el("input", "wb-input");
+      search.placeholder = "Search commands";
+      top.appendChild(search);
+      host.appendChild(top);
+      const list = el("div", "wb-keys-list");
+      host.appendChild(list);
+
+      const render = () => {
+        const needle = search.value.trim().toLowerCase();
+        list.innerHTML = "";
+        const head = el("div", "wb-keys-row head");
+        head.appendChild(el("span", null, "Command"));
+        head.appendChild(el("span", null, "Keybinding"));
+        head.appendChild(el("span", null, ""));
+        list.appendChild(head);
+        Commands.all()
+          .filter((c) => !needle ||
+            (c.title + " " + c.id).toLowerCase().includes(needle))
+          .sort((a, b) => a.title.localeCompare(b.title))
+          .forEach((c) => {
+            const row = el("div", "wb-keys-row");
+            const name = el("span", "wb-keys-name", c.title);
+            name.title = c.id;
+            row.appendChild(name);
+            const chord = Keys.chordOf(c.id);
+            const key = el("button", "wb-keys-chord" +
+              (Keys.isUser(c.id) ? " user" : ""), chord || "—");
+            key.title = "Click, then press the new keybinding " +
+              "(Escape cancels, Backspace unbinds)";
+            key.onclick = () => captureChord(c.id, key, render);
+            row.appendChild(key);
+            const reset = el("button", "wb-icon-btn", "↺");
+            reset.title = "Reset to default";
+            reset.style.visibility = Keys.isUser(c.id) ? "" : "hidden";
+            reset.onclick = () => { Keys.resetUser(c.id); render(); };
+            row.appendChild(reset);
+            list.appendChild(row);
+          });
+      };
+      search.oninput = render;
+      render();
+      setTimeout(() => search.focus(), 0);
+    }, { refresh: true });
+  }
+
+  function captureChord(commandId, button, done) {
+    button.textContent = "press keys…";
+    button.classList.add("capturing");
+    const onKey = (ev) => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (ev.key === "Escape") { cleanup(); done(); return; }
+      if (ev.key === "Backspace") {
+        Keys.setUser(commandId, null);
+        cleanup(); done(); return;
+      }
+      const chord = Keys.fromEvent(ev);
+      if (!chord) return;                 // a bare modifier: keep waiting
+      const holder = Keys.resolve(chord);
+      if (holder && holder !== commandId) {
+        const other = Commands.get(holder);
+        if (!confirm('"' + chord + '" is bound to “' +
+            (other ? other.title : holder) + "”. Move it here?")) {
+          cleanup(); done(); return;
+        }
+        Keys.setUser(holder, null);
+      }
+      Keys.setUser(commandId, chord);
+      cleanup();
+      done();
     };
-    step();
+    const cleanup = () => {
+      window.removeEventListener("keydown", onKey, true);
+      button.classList.remove("capturing");
+    };
+    window.addEventListener("keydown", onKey, true);
   }
 
-  function stopGraph() {
-    graphSim.running = false;
-    if (graphSim.frame) cancelAnimationFrame(graphSim.frame);
-    graphSim.frame = null;
-  }
+  /* =================================================================
+   * Command palette & quick open
+   * ================================================================= */
+  const palette = { open: false, mode: "cmd", sel: 0, items: [] };
 
-  function tickGraph() {
-    const nodes = graphData.nodes;
-    const n = nodes.length;
-    if (!n) return;
-    const k = graphSim.alpha;
-
-    // repulsion — the term that does the spreading
-    for (let i = 0; i < n; i++) {
-      const a = nodes[i];
-      for (let j = i + 1; j < n; j++) {
-        const b = nodes[j];
-        let dx = b.x - a.x, dy = b.y - a.y;
-        let d2 = dx * dx + dy * dy;
-        if (d2 < 1e-4) { dx = (i % 3) - 1 || 0.7; dy = (j % 3) - 1 || 0.7; d2 = 1; }
-        const dist = Math.sqrt(d2);
-        // strong close-range push, decaying with distance
-        const f = Math.min(4000 / d2, 90) * k;
-        const ux = dx / dist, uy = dy / dist;
-        a.vx -= ux * f; a.vy -= uy * f;
-        b.vx += ux * f; b.vy += uy * f;
-      }
-    }
-
-    // springs on dependency edges
-    const REST = 78;
-    graphData.links.forEach(({ a, b }) => {
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
-      const f = (dist - REST) * 0.035 * k;
-      const ux = dx / dist, uy = dy / dist;
-      a.vx += ux * f; a.vy += uy * f;
-      b.vx -= ux * f; b.vy -= uy * f;
-    });
-
-    // gentle pull to the origin so disconnected parts do not drift away
-    nodes.forEach((nd) => {
-      nd.vx -= nd.x * 0.0016 * k;
-      nd.vy -= nd.y * 0.0016 * k;
-    });
-
-    // integrate with damping; a dragged node is pinned to the pointer
-    nodes.forEach((nd) => {
-      if (graphSim.drag && graphSim.drag.node === nd) { nd.vx = nd.vy = 0; return; }
-      nd.vx *= 0.82; nd.vy *= 0.82;
-      const sp = Math.hypot(nd.vx, nd.vy);
-      if (sp > 12) { nd.vx = (nd.vx / sp) * 12; nd.vy = (nd.vy / sp) * 12; }
-      nd.x += nd.vx; nd.y += nd.vy;
-    });
-  }
-
-  function graphFocus() {
-    return graphSim.hover || graphSim.selected;
-  }
-
-  function isNear(name) {
-    const f = graphFocus();
-    if (!f) return true;
-    if (name === f) return true;
-    const nb = graphSim.adjacency.get(f);
-    return nb ? nb.has(name) : false;
-  }
-
-  function drawGraph() {
-    const dpr = window.devicePixelRatio || 1;
-    const W = graphCanvas.clientWidth, H = graphCanvas.clientHeight;
-    if (!W || !H) return;
-    if (graphCanvas.width !== Math.round(W * dpr)) {
-      graphCanvas.width = Math.round(W * dpr);
-      graphCanvas.height = Math.round(H * dpr);
-    }
-    const ctx = graphCanvas.getContext("2d");
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
-    ctx.translate(W / 2 + graphView.x, H / 2 + graphView.y);
-    ctx.scale(graphView.scale, graphView.scale);
-
-    const css = getComputedStyle(document.documentElement);
-    const line = css.getPropertyValue("--glass-border").trim();
-    const fg = css.getPropertyValue("--fg").trim();
-    const dim = css.getPropertyValue("--fg-faint").trim();
-    const accent = css.getPropertyValue("--accent").trim();
-    const focus = graphFocus();
-
-    // edges
-    ctx.lineWidth = 1 / graphView.scale;
-    graphData.links.forEach(({ a, b }) => {
-      const lit = focus && (a.name === focus || b.name === focus);
-      ctx.strokeStyle = lit ? accent : line;
-      ctx.globalAlpha = focus ? (lit ? 0.95 : 0.12) : 0.5;
-      ctx.lineWidth = (lit ? 1.8 : 1) / graphView.scale;
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-    });
-    ctx.globalAlpha = 1;
-
-    // nodes
-    const labelAll = graphView.scale > 1.35;
-    ctx.font = `${11 / graphView.scale}px ui-monospace, monospace`;
-    ctx.textBaseline = "middle";
-    graphData.nodes.forEach((nd) => {
-      const near = isNear(nd.name);
-      ctx.globalAlpha = near ? 1 : 0.18;
-      ctx.beginPath();
-      ctx.arc(nd.x, nd.y, nd.r, 0, 7);
-      ctx.fillStyle = graphColor(nd, css);
-      ctx.fill();
-      if (nd.name === graphSim.selected) {
-        ctx.strokeStyle = fg;
-        ctx.lineWidth = 2 / graphView.scale;
-        ctx.stroke();
-      }
-      const showLabel = labelAll || (focus && near) || nd.degree >= 6;
-      if (showLabel) {
-        ctx.fillStyle = nd.name === focus ? fg : dim;
-        ctx.fillText(nd.title || nd.name.split(".").pop(),
-                     nd.x + nd.r + 4 / graphView.scale, nd.y);
-      }
-      ctx.globalAlpha = 1;
-    });
-  }
-
-  /* -------- interaction -------- */
-  function graphPointAt(ev) {
-    const rect = graphCanvas.getBoundingClientRect();
-    const x = (ev.clientX - rect.left - rect.width / 2 - graphView.x) / graphView.scale;
-    const y = (ev.clientY - rect.top - rect.height / 2 - graphView.y) / graphView.scale;
-    return { x, y };
-  }
-
-  function graphNodeAt(ev) {
-    const { x, y } = graphPointAt(ev);
-    let best = null, bestD = Infinity;
-    graphData.nodes.forEach((n) => {
-      const d = Math.hypot(n.x - x, n.y - y);
-      if (d < Math.max(n.r + 6, 10) && d < bestD) { best = n; bestD = d; }
-    });
-    return best;
-  }
-
-  graphCanvas.addEventListener("mousedown", (ev) => {
-    const node = graphNodeAt(ev);
-    graphSim.moved = false;
-    if (node) {
-      graphSim.drag = { node, ...graphPointAt(ev) };
-    } else {
-      graphSim.panning = true;
-      graphSim.px = ev.clientX; graphSim.py = ev.clientY;
-    }
-  });
-
-  graphCanvas.addEventListener("mousemove", (ev) => {
-    if (graphSim.drag) {
-      const p = graphPointAt(ev);
-      graphSim.drag.node.x = p.x;
-      graphSim.drag.node.y = p.y;
-      graphSim.alpha = Math.max(graphSim.alpha, 0.35);
-      graphSim.moved = true;
-      startGraph();
-      return;
-    }
-    if (graphSim.panning) {
-      graphView.x += ev.clientX - graphSim.px;
-      graphView.y += ev.clientY - graphSim.py;
-      graphSim.px = ev.clientX; graphSim.py = ev.clientY;
-      graphSim.moved = true;
-      drawGraph();
-      return;
-    }
-    const node = graphNodeAt(ev);
-    const name = node ? node.name : null;
-    if (name !== graphSim.hover) {
-      graphSim.hover = name;
-      graphCanvas.style.cursor = name ? "pointer" : "grab";
-      drawGraph();
-    }
-  });
-
-  window.addEventListener("mouseup", (ev) => {
-    if (graphSim.drag && !graphSim.moved) selectGraphNode(graphSim.drag.node);
-    else if (graphSim.panning && !graphSim.moved) {
-      graphSim.selected = null;
-      drawGraph();
-    }
-    graphSim.drag = null;
-    graphSim.panning = false;
-  });
-
-  graphCanvas.addEventListener("mouseleave", () => {
-    if (graphSim.hover) { graphSim.hover = null; drawGraph(); }
-  });
-
-  graphCanvas.addEventListener("wheel", (ev) => {
-    ev.preventDefault();
-    const rect = graphCanvas.getBoundingClientRect();
-    const mx = ev.clientX - rect.left - rect.width / 2;
-    const my = ev.clientY - rect.top - rect.height / 2;
-    const before = graphView.scale;
-    const next = Math.max(0.15, Math.min(6, before * (ev.deltaY < 0 ? 1.12 : 0.89)));
-    // keep the point under the pointer fixed while zooming
-    graphView.x = mx - ((mx - graphView.x) / before) * next;
-    graphView.y = my - ((my - graphView.y) / before) * next;
-    graphView.scale = next;
-    drawGraph();
-  }, { passive: false });
-
-  graphCanvas.addEventListener("dblclick", () => resetGraphView());
-
-  function selectGraphNode(node) {
-    graphSim.selected = node.name;
-    drawGraph();
-    showSymbolInInspector(node.name);
-  }
-
-  function resetGraphView() {
-    graphView.x = 0; graphView.y = 0; graphView.scale = 1;
-    graphSim.alpha = 1;
-    startGraph();
-  }
-
-  function fitGraphView() {
-    if (!graphData.nodes.length) return;
-    const xs = graphData.nodes.map((n) => n.x), ys = graphData.nodes.map((n) => n.y);
-    const w = Math.max(...xs) - Math.min(...xs) || 1;
-    const h = Math.max(...ys) - Math.min(...ys) || 1;
-    const cx = (Math.max(...xs) + Math.min(...xs)) / 2;
-    const cy = (Math.max(...ys) + Math.min(...ys)) / 2;
-    const s = Math.min(graphCanvas.clientWidth / (w + 120),
-                       graphCanvas.clientHeight / (h + 120), 2);
-    graphView.scale = Math.max(0.15, s);
-    graphView.x = -cx * graphView.scale;
-    graphView.y = -cy * graphView.scale;
-    drawGraph();
-  }
-
-  /* ===================================================================
-   * Views, panels, palette
-   * =================================================================== */
-  function switchView(view) {
-    $$(".act").forEach((a) => a.classList.toggle("active", a.dataset.view === view));
-    $$(".side-panel").forEach((p) =>
-      p.classList.toggle("hidden", p.dataset.panel !== view));
-    document.getElementById("app").classList.remove("sidebar-collapsed");
-    if (view === "graph") openPaneView("deps");
-  }
-
-  function switchUtil(util) {
-    openPaneView(util);
-  }
-
-  function switchBottom(b) {
-    openPaneView(b);
-  }
-
-  /* command palette */
-  const COMMANDS = [
-    { name: "Check file", kind: "cmd", run: runCheck },
-    { name: "Save file", kind: "cmd", run: saveCurrent },
-    { name: "Toggle theme", kind: "cmd", run: toggleTheme },
-    { name: "Export: LaTeX", kind: "export", run: () => doExport("latex", "tex") },
-    { name: "Export: Markdown", kind: "export", run: () => doExport("markdown", "md") },
-    { name: "Export: JSON", kind: "export", run: () => doExport("json", "json") },
-    { name: "Export: Python", kind: "export", run: () => doExport("python", "py") },
-    { name: "Export: Python file into workspace (runnable)", kind: "export",
-      run: exportPythonToWorkspace },
-    { name: "Export: Lean", kind: "export", run: () => doExport("lean", "lean") },
-    { name: "New file", kind: "cmd", run: newFile },
-    { name: "Split pane right", kind: "pane",
-      run: () => EpsilonPanes.splitPane("row") },
-    { name: "Split pane down", kind: "pane",
-      run: () => EpsilonPanes.splitPane("col") },
-    { name: "Maximize pane", kind: "pane",
-      run: () => EpsilonPanes.toggleMaximize() },
-    { name: "Reset workspace layout", kind: "pane",
-      run: () => { EpsilonPanes.reset(); toast("Workspace reset", "ok"); } },
-  ];
-
-  // opening any registered view, and switching workspace profile, are
-  // commands too - so every tool is reachable without hunting for a button
-  const PANE_COMMANDS = [
-    ["editor", "Editor"], ["proof", "Proof"], ["plot", "Plot"],
-    ["inspector", "Inspector"], ["problems", "Problems"],
-    ["console", "Console"], ["output", "Output"],
-    ["cas", "CAS"], ["render", "Rendered mathematics"], ["run", "Run"],
-    ["deps", "Dependency graph"],
-  ].map(([id, label]) => ({
-    name: "Open: " + label, kind: "view", run: () => openPaneView(id),
-  }));
-
-  const PROFILE_COMMANDS = [
-    ["mathematics", "Mathematics"], ["algorithm", "Algorithm"],
-    ["research", "Research"], ["minimal", "Minimal"],
-  ].map(([id, label]) => ({
-    name: "Workspace: " + label, kind: "layout",
-    run: () => { EpsilonPanes.applyProfile(id); toast(label + " layout", "ok"); },
-  }));
-  let paletteMode = "cmd";
-  let paletteItems = [];
-  let paletteSel = 0;
-
-  function openPalette(mode) {
-    paletteMode = mode;
-    $("#paletteOverlay").classList.remove("hidden");
+  function openPalette(mode, preset) {
+    palette.open = true;
+    palette.mode = mode;
+    palette.sel = 0;
+    const overlay = $("#paletteOverlay");
+    overlay.classList.remove("hidden");
     const input = $("#paletteInput");
-    input.value = "";
-    input.placeholder = mode === "file" ? "Go to file…" : "Type a command…";
-    updatePalette("");
+    input.value = preset != null ? preset : (mode === "cmd" ? ">" : "");
+    input.placeholder = mode === "cmd"
+      ? "Type a command…" : "Go to file (: for line, @ for symbol)…";
     input.focus();
-  }
-  function closePalette() { $("#paletteOverlay").classList.add("hidden"); }
-
-  function updatePalette(q) {
-    q = q.toLowerCase();
-    if (paletteMode === "file") {
-      paletteItems = (state.files || [])
-        .filter((f) => f.path.toLowerCase().includes(q))
-        .map((f) => ({ name: f.path, kind: "file", run: () => openFile(f.path) }));
-    } else {
-      paletteItems = COMMANDS.concat(PANE_COMMANDS, PROFILE_COMMANDS)
-        .filter((c) => c.name.toLowerCase().includes(q));
-    }
-    paletteSel = 0;
     renderPalette();
+  }
+
+  function closePalette() {
+    palette.open = false;
+    $("#paletteOverlay").classList.add("hidden");
+    const entry = currentEditor();
+    if (entry) entry.editor.focus();
+  }
+
+  function paletteQuery() {
+    const raw = $("#paletteInput").value;
+    if (raw.startsWith(">")) return { kind: "cmd", q: raw.slice(1).trim() };
+    if (raw.startsWith("@")) return { kind: "symbol", q: raw.slice(1).trim() };
+    const gotoMatch = /^:(\d+)$/.exec(raw.trim());
+    if (gotoMatch) return { kind: "line", q: gotoMatch[1] };
+    const fileLine = /^([^:]+):(\d+)$/.exec(raw.trim());
+    if (fileLine) return { kind: "file", q: fileLine[1], line: +fileLine[2] };
+    return { kind: "file", q: raw.trim() };
+  }
+
+  function paletteItems() {
+    const { kind, q, line } = paletteQuery();
+    if (kind === "line") {
+      return [{ label: "Go to line " + q, hint: "", run: () => {
+        const entry = currentEditor();
+        if (entry) entry.editor.revealLine(Number(q), 1);
+      } }];
+    }
+    if (kind === "symbol") {
+      return documentSymbols().map((s) => ({
+        label: s.name, hint: s.kind + "  :" + s.line, run: () => {
+          const entry = currentEditor();
+          if (entry) entry.editor.revealLine(s.line, 1);
+        },
+        score: q ? (fuzzy(q, s.name) || { score: -1 }).score : 0,
+      })).filter((i) => i.score >= 0);
+    }
+    if (kind === "cmd") {
+      const source = q ? Commands.all()
+        : Commands.recentIds().map((id) => Commands.get(id))
+            .concat(Commands.all().filter((c) =>
+              !Commands.recentIds().includes(c.id)));
+      return source
+        .filter((c) => c && c.inPalette)
+        .map((c) => {
+          const text = c.category + ": " + c.title;
+          const m = q ? fuzzy(q, text) || fuzzy(q, c.aliases.join(" "))
+            : { score: 0, positions: [] };
+          if (!m) return null;
+          const reason = c.whyDisabled();
+          return {
+            label: text, key: Keys.label(c.id), disabled: !!reason,
+            hint: reason || c.description || "", score: m.score,
+            run: () => Commands.execute(c.id),
+          };
+        })
+        .filter(Boolean);
+    }
+    return state.entries
+      .filter((entry) => entry.kind === "file")
+      .map((entry) => {
+        const m = q ? fuzzy(q, entry.path) : { score: 0 };
+        if (!m) return null;
+        return { label: entry.path, hint: "", score: m.score,
+                 run: () => openFile(entry.path).then(() => {
+                   if (line) {
+                     const ed = editors.get(entry.path);
+                     if (ed) ed.editor.revealLine(line, 1);
+                   }
+                 }) };
+      })
+      .filter(Boolean);
   }
 
   function renderPalette() {
     const list = $("#paletteList");
     list.innerHTML = "";
-    paletteItems.forEach((it, i) => {
-      const li = el("li", "palette-item" + (i === paletteSel ? " sel" : ""));
-      li.appendChild(el("span", null, it.name));
-      li.appendChild(el("span", "pk", it.kind));
-      li.onclick = () => { closePalette(); it.run(); };
-      list.appendChild(li);
-    });
-  }
-
-  $("#paletteInput").addEventListener("input", (e) => updatePalette(e.target.value));
-  $("#paletteInput").addEventListener("keydown", (e) => {
-    if (e.key === "ArrowDown") { paletteSel = Math.min(paletteItems.length - 1, paletteSel + 1); renderPalette(); e.preventDefault(); }
-    else if (e.key === "ArrowUp") { paletteSel = Math.max(0, paletteSel - 1); renderPalette(); e.preventDefault(); }
-    else if (e.key === "Enter") { const it = paletteItems[paletteSel]; closePalette(); if (it) it.run(); }
-    else if (e.key === "Escape") closePalette();
-  });
-  $("#paletteOverlay").addEventListener("click", (e) => {
-    if (e.target.id === "paletteOverlay") closePalette();
-  });
-
-  /** Epsilon → Python → Run, inside one workspace.
-
-      The generated file lands next to the source and opens in the editor,
-      where Phase 3 makes it runnable — the whole chain (definition, proof,
-      code, execution) without leaving the IDE. Theorems arrive as comments
-      carrying their status labels; generation cannot upgrade one. */
-  async function exportPythonToWorkspace() {
-    const tab = currentTab();
-    if (!tab || !isEpsilon()) {
-      toast("Open an Epsilon file to export it as Python", "warn");
-      return;
-    }
-    await saveCurrent();
-    const r = await api("POST", "/api/export", { path: tab.path, format: "python" });
-    if (!r.ok) { toast("Export failed", "err"); return; }
-    const path = tab.path.replace(/\.epsl$/, "") + ".py";
-    const w = await api("PUT", "/api/file", { path, content: r.content });
-    if (w && w.ok === false) return;
-    await loadFiles();
-    openFile(path);
-    toast("Wrote " + path + " — press Run to execute it", "ok");
-  }
-
-  async function doExport(format, ext) {
-    const tab = currentTab();
-    if (!tab) return;
-    await saveCurrent();
-    const r = await api("POST", "/api/export", { path: tab.path, format });
-    if (!r.ok) { toast("Export failed", "err"); return; }
-    const blob = new Blob([r.content], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = tab.path.replace(/\.epsl$/, "") + "." + ext;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast("Exported " + format, "ok");
-  }
-
-  /* ===================================================================
-   * Console (REPL)
-   * =================================================================== */
-
-  /* ===================================================================
-   * search
-   * =================================================================== */
-  let searchTimer = null;
-  $("#searchInput").addEventListener("input", (e) => {
-    clearTimeout(searchTimer);
-    const q = e.target.value;
-    searchTimer = setTimeout(async () => {
-      const r = await api("GET", "/api/completions?prefix=" + encodeURIComponent(q));
-      const list = $("#searchResults");
-      list.innerHTML = "";
-      (r.items || []).slice(0, 40).forEach((it) => {
-        const item = el("li", "search-item");
-        // the citable name: the mathematical one when the library defines
-        // it, otherwise the internal identifier. Both resolve in a proof.
-        const cite = it.display_name || it.name;
-        item.innerHTML =
-          `<span class="sn">${esc(it.title || it.name)}</span><br>` +
-          (it.display_name ? `<span class="si">${esc(it.name)}</span><br>` : "") +
-          `<span class="ss">${esc(it.type || it.kind)}</span>`;
-        item.title = "Click to insert " + cite;
-        item.onclick = () => {
-          editor.focus();
-          insertAtCursor(cite);
-          toast("Inserted " + cite, "ok");
-        };
-        list.appendChild(item);
-      });
-    }, 200);
-  });
-
-  /* ===================================================================
-   * theme
-   * =================================================================== */
-  function toggleTheme() {
-    const root = document.documentElement;
-    const next = root.getAttribute("data-theme") === "dark" ? "light" : "dark";
-    root.setAttribute("data-theme", next);
-    try { localStorage.setItem("epsilon-theme", next); } catch (e) {}
-    if (EpsilonPanes.isOpen("deps")) drawGraph();
-  }
-
-  /* ===================================================================
-   * Text geometry
-   *
-   * The editor is a textarea sitting under a highlight layer, both in the
-   * same monospace face, so a caret or popup can be placed from (line,
-   * column) once the cell size is measured. The measurement is redone
-   * whenever the font may have changed rather than hard-coded.
-   * =================================================================== */
-  const metrics = { cw: 7.8, lh: 20, padL: 16, padT: 14 };
-
-  function measureText() {
-    const probe = el("span", null, "0".repeat(40));
-    const cs = getComputedStyle(editor);
-    probe.style.cssText =
-      `position:absolute;visibility:hidden;white-space:pre;font:${cs.font}`;
-    document.body.appendChild(probe);
-    const w = probe.getBoundingClientRect().width / 40;
-    probe.remove();
-    if (w > 0) metrics.cw = w;
-    metrics.lh = parseFloat(cs.lineHeight) || 20;
-    metrics.padL = parseFloat(cs.paddingLeft) || 16;
-    metrics.padT = parseFloat(cs.paddingTop) || 14;
-  }
-
-  function posToLineCol(pos) {
-    const before = editor.value.slice(0, pos);
-    const line = before.split("\n").length - 1;
-    const col = pos - (before.lastIndexOf("\n") + 1);
-    return { line, col };
-  }
-
-  /** Pixel position of a document offset, relative to the editor's box. */
-  function caretXY(pos) {
-    const { line, col } = posToLineCol(pos);
-    return {
-      x: metrics.padL + col * metrics.cw,
-      y: metrics.padT + line * metrics.lh,
-      line, col,
-    };
-  }
-
-  /* ===================================================================
-   * Animated caret
-   *
-   * The native caret cannot be styled, so it is hidden and drawn here.
-   * It eases in and out rather than hard-blinking, and holds solid while
-   * you are actually typing - a blink under the fingers is just noise.
-   * =================================================================== */
-  const caretEl = $("#caret");
-
-  function updateCaret() {
-    if (document.activeElement !== editor) {
-      caretEl.classList.add("hidden");
-      return;
-    }
-    // a selection has its own highlight; a caret on top would be confusing
-    if (editor.selectionStart !== editor.selectionEnd) {
-      caretEl.classList.add("hidden");
-      return;
-    }
-    const p = caretXY(editor.selectionStart);
-    caretEl.classList.remove("hidden");
-    caretEl.style.transform = `translate(${p.x}px, ${p.y}px)`;
-    caretEl.style.height = metrics.lh + "px";
-    // restart the animation so the caret is solid at the moment of typing
-    caretEl.classList.remove("blinking");
-    void caretEl.offsetWidth;
-    caretEl.classList.add("blinking");
-  }
-
-  /* ===================================================================
-   * Word under a position
-   * =================================================================== */
-  const IDENT_RE = /[A-Za-z0-9_'.ℕℤℚℝℂπ]/;
-
-  function wordAt(pos) {
-    const v = editor.value;
-    if (!v) return null;
-    let s = pos, e = pos;
-    while (s > 0 && IDENT_RE.test(v[s - 1])) s--;
-    while (e < v.length && IDENT_RE.test(v[e])) e++;
-    if (s === e) return null;
-    let word = v.slice(s, e).replace(/^\.+|\.+$/g, "");
-    if (!word || /^[0-9.]+$/.test(word)) return null;
-    return { word, start: s, end: e };
-  }
-
-  /** Document offset for a mouse event over the editor. */
-  function offsetAtPoint(clientX, clientY) {
-    const rect = editor.getBoundingClientRect();
-    const x = clientX - rect.left + editor.scrollLeft - metrics.padL;
-    const y = clientY - rect.top + editor.scrollTop - metrics.padT;
-    const line = Math.floor(y / metrics.lh);
-    const col = Math.round(x / metrics.cw);
-    const lines = editor.value.split("\n");
-    if (line < 0 || line >= lines.length) return null;
-    let off = 0;
-    for (let i = 0; i < line; i++) off += lines[i].length + 1;
-    return off + Math.max(0, Math.min(lines[line].length, col));
-  }
-
-  /* ===================================================================
-   * Autocomplete
-   * =================================================================== */
-  const acEl = $("#autocomplete");
-  const ac = { open: false, items: [], sel: 0, from: 0, token: 0 };
-  const acCache = new Map();
-
-  function currentPrefix() {
-    const pos = editor.selectionStart;
-    const v = editor.value;
-    let s = pos;
-    while (s > 0 && IDENT_RE.test(v[s - 1])) s--;
-    return { text: v.slice(s, pos), start: s };
-  }
-
-  async function fetchCompletions(prefix) {
-    if (acCache.has(prefix)) return acCache.get(prefix);
-    const r = await api("GET", "/api/completions?prefix=" +
-                        encodeURIComponent(prefix));
-    const items = (r.items || []).slice(0, 60);
-    acCache.set(prefix, items);
-    if (acCache.size > 80) acCache.delete(acCache.keys().next().value);
-    return items;
-  }
-
-  async function openAutocomplete(force) {
-    // completions come from the Epsilon environment; there is nothing
-    // honest to offer for a Python or C++ buffer yet
-    if (!isEpsilon()) return closeAutocomplete();
-    const { text, start } = currentPrefix();
-    if (!force && text.length < 2) return closeAutocomplete();
-    const token = ++ac.token;
-    let items;
-    try {
-      items = await fetchCompletions(text);
-    } catch (e) {
-      return closeAutocomplete();
-    }
-    if (token !== ac.token) return;          // a newer request superseded this
-    if (!items.length) return closeAutocomplete();
-    ac.items = items;
-    ac.sel = 0;
-    ac.from = start;
-    ac.open = true;
-    renderAutocomplete();
-  }
-
-  function renderAutocomplete() {
-    acEl.innerHTML = "";
-    ac.items.forEach((it, i) => {
-      const row = el("div", "ac-item" + (i === ac.sel ? " sel" : ""));
-      const kind = el("span", "ac-kind " + it.kind, shortKind(it.kind));
-      const main = el("div", "ac-main");
-      main.appendChild(el("div", "ac-name", it.name));
-      if (it.display_name) main.appendChild(el("div", "ac-title", it.title));
-      else if (it.type) main.appendChild(el("div", "ac-type", it.type));
-      row.appendChild(kind);
-      row.appendChild(main);
-      row.onmousedown = (ev) => { ev.preventDefault(); acceptCompletion(i); };
-      acEl.appendChild(row);
-    });
-    const p = caretXY(ac.from);
-    const wrapRect = $(".editor-wrap").getBoundingClientRect();
-    const gut = $("#gutter").getBoundingClientRect().width;
-    let left = gut + p.x - editor.scrollLeft;
-    let top = p.y + metrics.lh - codeScroll.scrollTop;
-    acEl.classList.remove("hidden");
-    // flip above the line when there is no room below
-    const h = acEl.getBoundingClientRect().height;
-    if (top + h > wrapRect.height && p.y - h > 0) top = p.y - h - codeScroll.scrollTop;
-    acEl.style.left = Math.max(4, Math.min(left, wrapRect.width - 320)) + "px";
-    acEl.style.top = Math.max(0, top) + "px";
-    scrollSelIntoView();
-  }
-
-  function shortKind(k) {
-    return ({ theorem: "thm", definition: "def", axiom: "ax",
-              constructor: "ctor", recursor: "rec", inductive: "ind",
-              opaque: "const", tactic: "tac", keyword: "kw" }[k] || k)
-      .slice(0, 5);
-  }
-
-  function scrollSelIntoView() {
-    const row = acEl.children[ac.sel];
-    if (row) row.scrollIntoView({ block: "nearest" });
-  }
-
-  function moveAutocomplete(delta) {
-    ac.sel = (ac.sel + delta + ac.items.length) % ac.items.length;
-    renderAutocomplete();
-  }
-
-  function acceptCompletion(index) {
-    const it = ac.items[index != null ? index : ac.sel];
-    if (!it) return closeAutocomplete();
-    const insert = it.display_name || it.name;
-    const pos = editor.selectionStart;
-    editor.setRangeText(insert, ac.from, pos, "end");
-    closeAutocomplete();
-    editor.dispatchEvent(new Event("input"));
-    updateCaret();
-  }
-
-  function closeAutocomplete() {
-    ac.open = false;
-    ac.items = [];
-    acEl.classList.add("hidden");
-  }
-
-  /* ===================================================================
-   * Hover and go-to-definition
-   * =================================================================== */
-  const tip = $("#hoverTip");
-  let hoverTimer = null;
-  let hoverWord = null;
-
-  function hideTip() {
-    tip.classList.add("hidden");
-    hoverWord = null;
-  }
-
-  async function showTipFor(word, clientX, clientY) {
-    if (!isEpsilon()) return;
-    let r;
-    try {
-      r = await api("GET", "/api/hover?name=" + encodeURIComponent(word));
-    } catch (e) { return; }
-    const info = r && r.info;
-    if (!info || hoverWord !== word) return;
-    tip.innerHTML = "";
-    if (info.title && info.title !== info.name) {
-      tip.appendChild(el("div", "tip-title", info.title));
-    }
-    tip.appendChild(el("div", "tip-name", info.name));
-    if (info.type) tip.appendChild(el("div", "tip-type", info.type));
-    if (info.status_label) {
-      tip.appendChild(el("div", "tip-status " + info.status, info.status_label));
-    }
-    if (info.doc) tip.appendChild(el("div", "tip-doc", info.doc));
-    if (info.axioms && info.axioms.length) {
-      tip.appendChild(el("div", "tip-doc",
-                         "axioms: " + info.axioms.join(", ")));
-    }
-    tip.appendChild(el("div", "tip-hint",
-                       (isMac ? "⌘" : "Ctrl") + "+click to go to definition"));
-    tip.classList.remove("hidden");
-    const box = tip.getBoundingClientRect();
-    const x = Math.min(clientX + 12, window.innerWidth - box.width - 10);
-    const y = clientY + 22 + box.height > window.innerHeight
-      ? clientY - box.height - 10 : clientY + 22;
-    tip.style.left = Math.max(6, x) + "px";
-    tip.style.top = Math.max(6, y) + "px";
-  }
-
-  function showSymbolInInspector(name) {
-    switchUtil("inspector");
-    api("GET", "/api/hover?name=" + encodeURIComponent(name)).then((r) => {
-      const info = r && r.info;
-      const panel = $("#inspectorSymbol");
-      panel.innerHTML = "";
-      if (!info) {
-        panel.appendChild(el("div", "empty-hint", "Unknown symbol: " + name));
-        return;
-      }
-      const item = el("div", "inspector-item");
-      item.appendChild(el("div", "ik", (info.kind || "symbol").toUpperCase()));
-      if (info.title && info.title !== info.name) {
-        item.appendChild(el("div", "tip-title", info.title));
-      }
-      item.appendChild(el("div", "tip-name", info.name));
-      if (info.type) item.appendChild(el("div", "tip-type", info.type));
-      if (info.status_label) {
-        item.appendChild(el("div", "tip-status " + info.status,
-                            info.status_label));
-      }
-      if (info.doc) item.appendChild(el("div", "tip-doc", info.doc));
-      if (info.module) {
-        item.appendChild(el("div", "tip-doc", "module: " + info.module));
-      }
-      panel.appendChild(item);
-    });
-  }
-
-  async function goToDefinition(word) {
-    if (!isEpsilon()) return;
-    let r;
-    try {
-      r = await api("GET", "/api/definition?name=" + encodeURIComponent(word));
-    } catch (e) { return; }
-    const loc = r && r.location;
-    if (loc && loc.span) {
-      const file = (state.files || []).find(
-        (f) => f.path.replace(/\.epsl$/, "") === loc.module);
-      const here = state.active &&
-        state.active.replace(/\.epsl$/, "").split("/").pop() === loc.module;
-      // only navigate when the definition is in a file we can actually show;
-      // a library span would otherwise scroll to a meaningless line here
-      if (here) {
-        gotoSpan(loc.span);
-        toast("Jumped to " + loc.name, "ok");
-        return;
-      }
-      if (file) {
-        await openFile(file.path);
-        setTimeout(() => gotoSpan(loc.span), 140);
-        toast("Jumped to " + loc.name, "ok");
-        return;
-      }
-    }
-    // library symbols have no file in the workspace: show them instead of
-    // navigating nowhere
-    showSymbolInInspector(word);
-  }
-
-  /* ===================================================================
-   * Console
-   * =================================================================== */
-  const consoleInput = $("#consoleInput");
-  const CONSOLE_HISTORY_KEY = "epsilon.console.history.v1";
-  let consoleHistory = [];
-  let histIdx = 0;
-
-  function loadConsoleHistory() {
-    try {
-      consoleHistory = JSON.parse(localStorage.getItem(CONSOLE_HISTORY_KEY)) || [];
-    } catch (e) { consoleHistory = []; }
-    histIdx = consoleHistory.length;
-  }
-
-  function saveConsoleHistory() {
-    try {
-      localStorage.setItem(CONSOLE_HISTORY_KEY,
-                           JSON.stringify(consoleHistory.slice(-200)));
-    } catch (e) {}
-  }
-
-  function appendConsole(text, cls) {
-    const log = $("#consoleLog");
-    const line = el("div", "console-line " + (cls || ""));
-    line.textContent = text;
-    if (cls !== "in") {
-      const copy = el("button", "console-copy", "copy");
-      copy.title = "Copy this result";
-      copy.onclick = () => {
-        navigator.clipboard && navigator.clipboard.writeText(text);
-        toast("Copied", "ok");
+    palette.items = paletteItems()
+      .sort((a, b) => (b.score || 0) - (a.score || 0))
+      .slice(0, 40);
+    if (palette.sel >= palette.items.length) palette.sel = 0;
+    palette.items.forEach((item, i) => {
+      const row = el("div", "wb-pal-item" +
+        (i === palette.sel ? " sel" : "") + (item.disabled ? " disabled" : ""));
+      row.setAttribute("role", "option");
+      const label = el("span", "wb-pal-label", item.label);
+      row.appendChild(label);
+      if (item.key) row.appendChild(el("span", "wb-pal-key", item.key));
+      if (item.hint) row.appendChild(el("span", "wb-pal-hint", item.hint));
+      row.onmousedown = (ev) => {
+        ev.preventDefault();
+        palette.sel = i;
+        acceptPalette();
       };
-      line.appendChild(copy);
-    }
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
-    return line;
-  }
-
-  function clearConsole() {
-    $("#consoleLog").innerHTML = "";
-  }
-
-  /* One console, two languages. ε> evaluates Epsilon through the engine;
-     py> is a persistent Python session — real state, held on the backend,
-     surviving between inputs the way a console must. */
-  let consoleMode = readJSON("epsilon.console.lang", "epsilon");
-
-  function setConsoleMode(mode) {
-    consoleMode = mode;
-    writeJSON("epsilon.console.lang", mode);
-    const btn = $("#consoleLang");
-    if (btn) {
-      btn.textContent = mode === "python" ? "py>" : "ε>";
-      btn.classList.toggle("py", mode === "python");
-    }
-    consoleInput.placeholder = mode === "python"
-      ? "Python — a persistent session; Enter to run, Shift+Enter for a new line"
-      : "evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete";
-  }
-
-  async function runConsole(code) {
-    consoleHistory.push(code);
-    saveConsoleHistory();
-    histIdx = consoleHistory.length;
-    appendConsole(code, "in");
-    const pending = appendConsole("…", "pending");
-    let r;
-    try {
-      r = consoleMode === "python"
-        ? await api("POST", "/api/pyrepl", { code })
-        : await api("POST", "/api/eval", { code });
-    } catch (e) {
-      pending.remove();
-      appendConsole(String(e), "err");
-      return;
-    }
-    pending.remove();
-    if (consoleMode === "python") {
-      if (r.output) appendConsole(r.output.replace(/\n$/, ""), "");
-      if (r.error) appendConsole(r.error.replace(/\n$/, ""), "err");
-      if (r.reset) appendConsole("— the Python session was reset —", "err");
-      return;
-    }
-    if (r.output) appendConsole(r.output, r.ok ? "" : "err");
-    (r.diagnostics || []).forEach((d) => appendConsole(d, "err"));
-  }
-
-  function autosizeConsoleInput() {
-    consoleInput.style.height = "auto";
-    consoleInput.style.height =
-      Math.min(140, consoleInput.scrollHeight) + "px";
-  }
-
-  async function consoleComplete() {
-    const pos = consoleInput.selectionStart;
-    const v = consoleInput.value;
-    let s = pos;
-    while (s > 0 && IDENT_RE.test(v[s - 1])) s--;
-    const prefix = v.slice(s, pos);
-    if (prefix.length < 2) return;
-    const items = await fetchCompletions(prefix);
-    if (!items.length) return;
-    if (items.length === 1) {
-      consoleInput.setRangeText(items[0].name, s, pos, "end");
-      return;
-    }
-    appendConsole(items.slice(0, 12).map((i) => i.name).join("   "), "hint");
-  }
-
-  /* ===================================================================
-   * Editor intelligence wiring
-   * =================================================================== */
-  function wireIntelligence() {
-    measureText();
-    editor.classList.add("custom-caret");
-    loadConsoleHistory();
-
-    // --- caret ---
-    ["input", "click", "keyup", "focus", "select"].forEach((ev) =>
-      editor.addEventListener(ev, updateCaret));
-    editor.addEventListener("blur", () => { updateCaret(); closeAutocomplete(); });
-    codeScroll.addEventListener("scroll", () => {
-      caretEl.style.marginTop = -codeScroll.scrollTop + "px";
-      caretEl.style.marginLeft = -codeScroll.scrollLeft + "px";
-      if (ac.open) renderAutocomplete();
+      list.appendChild(row);
     });
+    if (!palette.items.length) {
+      list.appendChild(el("div", "wb-empty", "No matches."));
+    }
+  }
 
-    // --- autocomplete keys, before the editor's own handler ---
-    editor.addEventListener("keydown", (ev) => {
-      const mod = isMac ? ev.metaKey : ev.ctrlKey;
-      if (mod && ev.code === "Space") {
-        ev.preventDefault();
-        openAutocomplete(true);
-        return;
+  function acceptPalette() {
+    const item = palette.items[palette.sel];
+    if (!item) return;
+    if (item.disabled) {
+      notify(item.hint || "That command is not available here", "warn");
+      return;
+    }
+    closePalette();
+    item.run();
+  }
+
+  /** Lexical document symbols: def/class/function per language. */
+  function documentSymbols() {
+    const entry = currentEditor();
+    if (!entry) return [];
+    const text = entry.editor.getValue();
+    const lang = currentLanguage();
+    const out = [];
+    const push = (name, kind, line) => out.push({ name, kind, line });
+    text.split("\n").forEach((lineText, i) => {
+      if (lang === "python") {
+        const m = /^\s*(def|class)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(lineText);
+        if (m) push(m[2], m[1] === "def" ? "function" : "class", i + 1);
+      } else if (lang === "cpp" || lang === "javascript") {
+        let m = /^\s*(?:class|struct)\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(lineText);
+        if (m) { push(m[1], "class", i + 1); return; }
+        m = /^[A-Za-z_][\w:<>,*&\s]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*$/
+          .exec(lineText);
+        if (m && !/^\s*(if|for|while|switch|return)\b/.test(lineText)) {
+          push(m[1], "function", i + 1);
+        }
+        m = /^\s*function\s+([A-Za-z_][A-Za-z0-9_]*)/.exec(lineText);
+        if (m) push(m[1], "function", i + 1);
       }
-      if (!ac.open) return;
-      if (ev.key === "ArrowDown") { ev.preventDefault(); moveAutocomplete(1); }
-      else if (ev.key === "ArrowUp") { ev.preventDefault(); moveAutocomplete(-1); }
-      else if (ev.key === "Enter" || ev.key === "Tab") {
-        ev.preventDefault();
+    });
+    return out;
+  }
+
+  /* =================================================================
+   * Commands — the single registry every surface reads
+   * ================================================================= */
+  function editorCmd(id, title, action, chord, category) {
+    Commands.register({
+      id, title, category: category || "Edit",
+      run: () => {
+        const entry = currentEditor();
+        if (entry) entry.editor.exec(action);
+      },
+      whyDisabled: () => currentEditor() ? null : "no editor is active",
+    });
+    if (chord) Keys.registerDefault(id, chord);
+  }
+
+  function needsEditor() {
+    return currentEditor() ? null : "no editor is active";
+  }
+
+  function registerCommands() {
+    const C = Commands.register;
+    const K = Keys.registerDefault;
+
+    /* ---- File ---- */
+    C({ id: "file.new", title: "New File…", category: "File",
+        run: () => newFile() });
+    K("file.new", "Mod+N");
+    C({ id: "file.newFolder", title: "New Folder…", category: "File",
+        run: () => newFolder() });
+    C({ id: "file.newProject", title: "New Project…", category: "File",
+        run: newProject });
+    C({ id: "file.open", title: "Go to File… (Quick Open)", category: "File",
+        aliases: ["open file"], run: () => openPalette("file") });
+    K("file.open", "Mod+P");
+    C({ id: "file.save", title: "Save", category: "File",
+        run: () => state.active && saveFile(state.active),
+        whyDisabled: () => state.active && editors.has(state.active)
+          ? null : "no file is active" });
+    K("file.save", "Mod+S");
+    C({ id: "file.saveAll", title: "Save All", category: "File",
+        run: async () => {
+          for (const [path, dirty] of state.dirty) {
+            if (dirty) await saveFile(path);
+          }
+        } });
+    K("file.saveAll", "Mod+Alt+S");
+    C({ id: "file.close", title: "Close Editor", category: "File",
+        run: () => state.active && EpsilonPanes.closeView(state.active),
+        whyDisabled: () => state.active ? null : "nothing is open" });
+    K("file.close", "Mod+W");
+    C({ id: "file.reopenClosed", title: "Reopen Closed Editor",
+        category: "File",
+        run: () => {
+          const path = state.closedTabs.pop();
+          if (path) openFile(path);
+        },
+        whyDisabled: () => state.closedTabs.length
+          ? null : "no editor has been closed" });
+    K("file.reopenClosed", "Mod+Shift+T");
+    C({ id: "file.closeAll", title: "Close All Editors", category: "File",
+        run: () => Array.from(editors.keys())
+          .forEach((p) => EpsilonPanes.closeView(p)) });
+    C({ id: "file.exportDownload", title: "Export: Download Active File",
+        category: "File",
+        run: () => {
+          const entry = currentEditor();
+          if (!entry) return;
+          const blob = new Blob([entry.editor.getValue()],
+                                { type: "text/plain" });
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(blob);
+          a.download = tabTitle(state.active);
+          a.click();
+          URL.revokeObjectURL(a.href);
+        },
+        whyDisabled: needsEditor });
+
+    /* ---- Edit ---- */
+    C({ id: "edit.undo", title: "Undo", category: "Edit",
+        run: () => { const entry = currentEditor();
+          if (entry) { entry.editor.focus(); document.execCommand("undo"); } },
+        whyDisabled: needsEditor });
+    C({ id: "edit.redo", title: "Redo", category: "Edit",
+        run: () => { const entry = currentEditor();
+          if (entry) { entry.editor.focus(); document.execCommand("redo"); } },
+        whyDisabled: needsEditor });
+    C({ id: "edit.cut", title: "Cut", category: "Edit",
+        run: () => document.execCommand("cut"), whyDisabled: needsEditor });
+    C({ id: "edit.copy", title: "Copy", category: "Edit",
+        run: () => document.execCommand("copy"), whyDisabled: needsEditor });
+    C({ id: "edit.paste", title: "Paste", category: "Edit",
+        run: async () => {
+          const entry = currentEditor();
+          if (!entry || !navigator.clipboard) return;
+          try {
+            const text = await navigator.clipboard.readText();
+            entry.editor.insertText(text);
+          } catch (e) {
+            notify("The browser refused clipboard access — use " +
+                   (isMac ? "⌘V" : "Ctrl+V"), "warn");
+          }
+        }, whyDisabled: needsEditor });
+    editorCmd("edit.selectAll", "Select All", "selectAll");
+    editorCmd("edit.find", "Find", "find", "Mod+F");
+    editorCmd("edit.replace", "Replace", "replace", "Mod+H");
+    editorCmd("edit.findNext", "Find Next", "findNext", "F3");
+    editorCmd("edit.findPrevious", "Find Previous", "findPrevious", "Shift+F3");
+    C({ id: "edit.findInFiles", title: "Find in Files", category: "Edit",
+        run: () => { showSidebar("search");
+          setTimeout(() => $("#searchInput") && $("#searchInput").focus(), 0); } });
+    K("edit.findInFiles", "Mod+Shift+F");
+    C({ id: "edit.replaceInFiles", title: "Replace in Files", category: "Edit",
+        run: () => { showSidebar("search");
+          setTimeout(() => $("#searchReplace") && $("#searchReplace").focus(), 0); } });
+    K("edit.replaceInFiles", "Mod+Shift+H");
+    editorCmd("edit.toggleComment", "Toggle Line Comment", "toggleComment",
+              "Mod+/");
+    editorCmd("edit.indent", "Indent Lines", "indent");
+    editorCmd("edit.dedent", "Outdent Lines", "dedent");
+    editorCmd("edit.moveLinesUp", "Move Lines Up", "moveLinesUp", "Alt+ArrowUp");
+    editorCmd("edit.moveLinesDown", "Move Lines Down", "moveLinesDown",
+              "Alt+ArrowDown");
+    editorCmd("edit.duplicateLines", "Duplicate Lines", "duplicateLines",
+              "Mod+Shift+D");
+    editorCmd("edit.deleteLines", "Delete Lines", "deleteLines", "Mod+Shift+K");
+    C({ id: "edit.format", title: "Format Document", category: "Edit",
+        run: async () => {
+          const entry = currentEditor();
+          if (!entry) return;
+          const language = currentLanguage();
+          const r = await api("POST", "/api/format",
+                              { language, code: entry.editor.getValue() });
+          if (!r.ok) { notify(r.message || "Could not format", "warn"); return; }
+          const [s] = entry.editor.getSelection();
+          entry.editor.setValue(r.code);
+          entry.editor.setSelection(Math.min(s, r.code.length));
+          entry.editor._afterEdit();
+          notify("Formatted", "ok");
+        },
+        whyDisabled: () => {
+          if (!currentEditor()) return "no editor is active";
+          const language = currentLanguage();
+          const tool = language === "python" ? "black"
+            : language === "cpp" ? "clang-format" : null;
+          if (!tool) return "no formatter exists for " +
+            (LANGUAGE_LABEL[language] || language);
+          if (state.caps && state.caps.format &&
+              !state.caps.format[language]) {
+            return tool + " is not available " +
+              (state.caps.terminal ? "on this machine"
+               : "in the browser build — use the server build");
+          }
+          return null;
+        } });
+    K("edit.format", "Shift+Alt+F");
+    C({ id: "edit.autocomplete", title: "Trigger Suggest", category: "Edit",
+        run: () => { const entry = currentEditor();
+          if (entry) entry.editor.openCompletion(true); },
+        whyDisabled: needsEditor });
+    K("edit.autocomplete", "Mod+Space");
+
+    /* ---- Selection ---- */
+    editorCmd("selection.line", "Select Line", "selectLine", "Mod+L",
+              "Selection");
+    editorCmd("selection.word", "Select Word", "selectWord", null, "Selection");
+    editorCmd("selection.nextOccurrence", "Select Next Occurrence",
+              "selectNextOccurrence", "Mod+D", "Selection");
+    const needsCursors = () => "multiple cursors need a custom text " +
+      "surface the editor does not have yet (the platform textarea keeps " +
+      "IME and accessibility working; a custom surface is planned)";
+    C({ id: "selection.addCursorAbove", title: "Add Cursor Above",
+        category: "Selection", run: () => {}, whyDisabled: needsCursors });
+    C({ id: "selection.addCursorBelow", title: "Add Cursor Below",
+        category: "Selection", run: () => {}, whyDisabled: needsCursors });
+    C({ id: "selection.selectAllOccurrences",
+        title: "Select All Occurrences", category: "Selection",
+        run: () => {}, whyDisabled: needsCursors });
+
+    /* ---- View ---- */
+    C({ id: "view.commandPalette", title: "Command Palette",
+        category: "View", run: () => openPalette("cmd") });
+    K("view.commandPalette", "Mod+Shift+P");
+    C({ id: "view.explorer", title: "Explorer", category: "View",
+        run: () => showSidebar("explorer") });
+    K("view.explorer", "Mod+Shift+E");
+    C({ id: "view.search", title: "Search", category: "View",
+        run: () => showSidebar("search") });
+    C({ id: "view.scm", title: "Source Control", category: "View",
+        run: () => showSidebar("scm") });
+    K("view.scm", "Mod+Shift+G");
+    C({ id: "view.runDebug", title: "Run and Debug", category: "View",
+        run: () => showSidebar("rundebug") });
+    C({ id: "view.extensions", title: "Extensions", category: "View",
+        run: () => {},
+        whyDisabled: () => "there is no extension host yet — extensions " +
+          "are a later phase, and a fake marketplace would be worse than " +
+          "none" });
+    C({ id: "view.terminal", title: "Terminal", category: "View",
+        run: () => togglePanel("terminal") });
+    K("view.terminal", "Mod+`");
+    C({ id: "view.problems", title: "Problems", category: "View",
+        run: () => togglePanel("problems") });
+    K("view.problems", "Mod+Shift+M");
+    C({ id: "view.output", title: "Output", category: "View",
+        run: () => togglePanel("output") });
+    C({ id: "view.debugConsole", title: "Debug Console", category: "View",
+        run: () => togglePanel("debug") });
+    C({ id: "view.togglePanel", title: "Toggle Panel", category: "View",
+        run: () => togglePanel() });
+    K("view.togglePanel", "Mod+J");
+    C({ id: "view.toggleSidebar", title: "Toggle Primary Sidebar",
+        category: "View", run: toggleSidebar });
+    K("view.toggleSidebar", "Mod+B");
+    C({ id: "view.toggleAux", title: "Toggle Secondary Sidebar",
+        category: "View", run: toggleAux });
+    C({ id: "view.toggleStatusBar", title: "Toggle Status Bar",
+        category: "View",
+        run: () => Settings.set("workbench.statusBar",
+          !Settings.get("workbench.statusBar")) });
+    C({ id: "view.toggleActivityBar", title: "Toggle Activity Bar",
+        category: "View",
+        run: () => Settings.set("workbench.activityBar",
+          !Settings.get("workbench.activityBar")) });
+    C({ id: "view.splitRight", title: "Split Editor Right", category: "View",
+        run: () => EpsilonPanes.splitPane("row"), whyDisabled: needsAnyTab });
+    K("view.splitRight", "Mod+\\");
+    C({ id: "view.splitDown", title: "Split Editor Down", category: "View",
+        run: () => EpsilonPanes.splitPane("col"), whyDisabled: needsAnyTab });
+    C({ id: "view.joinEditors", title: "Join All Editor Groups",
+        category: "View", run: () => EpsilonPanes.joinAll() });
+    C({ id: "view.fullscreen", title: "Full Screen", category: "View",
+        run: () => document.fullscreenElement
+          ? document.exitFullscreen()
+          : document.documentElement.requestFullscreen() });
+    K("view.fullscreen", "F11");
+    C({ id: "view.zenMode", title: "Zen Mode", category: "View",
+        run: toggleZen });
+    K("view.zenMode", "Mod+K");
+    C({ id: "view.theme", title: "Change Color Theme", category: "View",
+        run: () => {
+          const order = ["dark", "light", "high-contrast"];
+          const current = Settings.get("workbench.theme");
+          Settings.set("workbench.theme",
+            order[(order.indexOf(current) + 1) % order.length]);
+        } });
+
+    function needsAnyTab() {
+      return state.active ? null : "nothing is open to split";
+    }
+
+    /* ---- Go ---- */
+    C({ id: "go.file", title: "Go to File…", category: "Go",
+        run: () => openPalette("file") });
+    C({ id: "go.symbol", title: "Go to Symbol in Editor…", category: "Go",
+        run: () => openPalette("file", "@"), whyDisabled: needsEditor });
+    K("go.symbol", "Mod+Shift+O");
+    C({ id: "go.line", title: "Go to Line…", category: "Go",
+        run: () => openPalette("file", ":"), whyDisabled: needsEditor });
+    K("go.line", "Mod+G");
+    C({ id: "go.definition", title: "Go to Definition", category: "Go",
+        run: goToDefinition, whyDisabled: () =>
+          currentLanguage() === "python" ? null
+            : "definition lookup is semantic for Python (jedi); other " +
+              "languages have no language service yet" });
+    K("go.definition", "F12");
+    C({ id: "go.back", title: "Go Back", category: "Go",
+        run: () => navGo(-1),
+        whyDisabled: () => state.navIndex > 0 ? null : "no earlier location" });
+    K("go.back", "Alt+ArrowLeft");
+    C({ id: "go.forward", title: "Go Forward", category: "Go",
+        run: () => navGo(1),
+        whyDisabled: () => state.navIndex < state.navStack.length - 1
+          ? null : "no later location" });
+    K("go.forward", "Alt+ArrowRight");
+
+    /* ---- Run ---- */
+    C({ id: "run.file", title: "Run File", category: "Run",
+        run: runCurrentFile, whyDisabled: runDisabledReason,
+        description: "Run the active Python or C++ file" });
+    K("run.file", "F5");
+    C({ id: "run.withoutDebugging", title: "Run Without Debugging",
+        category: "Run", run: runCurrentFile, whyDisabled: runDisabledReason });
+    K("run.withoutDebugging", "Mod+F5");
+    C({ id: "debug.start", title: "Start Debugging", category: "Run",
+        run: () => dbg.start(), whyDisabled: () => dbg.reason() });
+    K("debug.start", "F6");
+    C({ id: "debug.stop", title: "Stop Debugging", category: "Run",
+        run: () => dbg.stop(),
+        whyDisabled: () => dbg.id ? null : "nothing is being debugged" });
+    K("debug.stop", "Shift+F6");
+    C({ id: "debug.continue", title: "Debug: Continue", category: "Run",
+        run: () => dbg.command("continue"), whyDisabled: needsStopped });
+    C({ id: "debug.stepOver", title: "Debug: Step Over", category: "Run",
+        run: () => dbg.command("next"), whyDisabled: needsStopped });
+    K("debug.stepOver", "F10");
+    C({ id: "debug.stepInto", title: "Debug: Step Into", category: "Run",
+        run: () => dbg.command("step"), whyDisabled: needsStopped });
+    K("debug.stepInto", "F11");
+    C({ id: "debug.stepOut", title: "Debug: Step Out", category: "Run",
+        run: () => dbg.command("return"), whyDisabled: needsStopped });
+    K("debug.stepOut", "Shift+F11");
+    C({ id: "run.restart", title: "Restart Run", category: "Run",
+        run: runCurrentFile, whyDisabled: runDisabledReason });
+    C({ id: "run.configure", title: "Configure Run (timeout, save)",
+        category: "Run", run: () => openSettingsUI("Run") });
+
+    function needsStopped() {
+      return dbg.id && dbg.stopped ? null
+        : "the debugger is not stopped at a line";
+    }
+
+    /* ---- Terminal ---- */
+    const noShell = () => state.caps && state.caps.terminal ? null
+      : "there is no operating system to give a shell to in the browser " +
+        "build — the server build has real terminals";
+    C({ id: "terminal.new", title: "New Terminal", category: "Terminal",
+        run: async () => { showPanel("terminal"); await term.create();
+                           term.focusInput(); },
+        whyDisabled: noShell });
+    K("terminal.new", "Mod+Shift+`");
+    C({ id: "terminal.kill", title: "Kill Terminal", category: "Terminal",
+        run: () => term.active && term.kill(term.active),
+        whyDisabled: () => term.active ? null : "no terminal is open" });
+    C({ id: "terminal.clear", title: "Clear Terminal", category: "Terminal",
+        run: () => term.clear(),
+        whyDisabled: () => term.active ? null : "no terminal is open" });
+
+    /* ---- Tools ---- */
+    C({ id: "tools.settings", title: "Settings", category: "Tools",
+        run: () => openSettingsUI() });
+    K("tools.settings", "Mod+,");
+    C({ id: "tools.shortcuts", title: "Keyboard Shortcuts", category: "Tools",
+        run: openShortcutsUI });
+    C({ id: "tools.reloadFiles", title: "Reload File Explorer",
+        category: "Tools", run: loadFiles });
+
+    /* ---- Help ---- */
+    C({ id: "help.about", title: "About Epsilon", category: "Help",
+        run: () => notify("Epsilon — a programming IDE in the browser. " +
+          "Python and C++, for real. Mathematics returns as tooling later.",
+          "info", [{ label: "Source",
+            run: () => window.open("https://github.com/igangwoo/Epsilon") }]) });
+  }
+
+  /* =================================================================
+   * Menu bar
+   * ================================================================= */
+  function registerMenus() {
+    const M = Menus;
+    M.addMenu("file", "File", 1);
+    ["file.new", "file.newFolder", "file.newProject", null,
+     "file.open", "recent", null,
+     "file.save", "file.saveAll", null,
+     "file.close", "file.closeAll", "file.reopenClosed", null,
+     "file.exportDownload"].forEach((id) => M.addItem("file",
+      id === null ? { separator: true }
+        : id === "recent" ? { submenu: "Open Recent", recent: true }
+        : { command: id }));
+
+    M.addMenu("edit", "Edit", 2);
+    ["edit.undo", "edit.redo", null, "edit.cut", "edit.copy", "edit.paste",
+     "edit.selectAll", null, "edit.find", "edit.replace", "edit.findInFiles",
+     "edit.replaceInFiles", null, "edit.toggleComment", "edit.format",
+     "edit.autocomplete"].forEach((id) => M.addItem("edit",
+      id === null ? { separator: true } : { command: id }));
+
+    M.addMenu("selection", "Selection", 3);
+    ["selection.line", "selection.word", "selection.nextOccurrence", null,
+     "selection.selectAllOccurrences", "selection.addCursorAbove",
+     "selection.addCursorBelow", null, "edit.moveLinesUp",
+     "edit.moveLinesDown", "edit.duplicateLines", "edit.deleteLines"]
+      .forEach((id) => M.addItem("selection",
+        id === null ? { separator: true } : { command: id }));
+
+    M.addMenu("view", "View", 4);
+    ["view.commandPalette", null, "view.explorer", "view.search", "view.scm",
+     "view.runDebug", "view.extensions", null, "view.terminal",
+     "view.problems", "view.output", "view.debugConsole", null,
+     "view.togglePanel", "view.toggleSidebar", "view.toggleAux",
+     "view.toggleStatusBar", "view.toggleActivityBar", null,
+     "view.splitRight", "view.splitDown", "view.joinEditors", null,
+     "view.theme", "view.fullscreen", "view.zenMode"]
+      .forEach((id) => M.addItem("view",
+        id === null ? { separator: true } : { command: id }));
+
+    M.addMenu("go", "Go", 5);
+    ["go.back", "go.forward", null, "go.file", "go.symbol", "go.line", null,
+     "go.definition"].forEach((id) => M.addItem("go",
+      id === null ? { separator: true } : { command: id }));
+
+    M.addMenu("run", "Run", 6);
+    ["run.file", "run.withoutDebugging", "debug.start", "debug.stop",
+     "run.restart", null, "debug.continue", "debug.stepOver",
+     "debug.stepInto", "debug.stepOut", null, "run.configure"]
+      .forEach((id) => M.addItem("run",
+        id === null ? { separator: true } : { command: id }));
+
+    M.addMenu("terminal", "Terminal", 7);
+    ["terminal.new", "terminal.clear", "terminal.kill"]
+      .forEach((id) => M.addItem("terminal", { command: id }));
+
+    M.addMenu("tools", "Tools", 8);
+    ["view.commandPalette", "tools.settings", "tools.shortcuts",
+     "view.extensions", "tools.reloadFiles"]
+      .forEach((id) => M.addItem("tools", { command: id }));
+
+    M.addMenu("help", "Help", 9);
+    ["help.about"].forEach((id) => M.addItem("help", { command: id }));
+  }
+
+  let openMenu = null;
+  function renderMenubar() {
+    const bar = $("#menubar");
+    bar.innerHTML = "";
+    Menus.bar().forEach((menu) => {
+      const btn = el("button", "wb-menu-btn", menu.title);
+      btn.setAttribute("aria-haspopup", "true");
+      btn.setAttribute("role", "menuitem");
+      btn.dataset.menu = menu.id;
+      btn.onclick = (ev) => {
         ev.stopPropagation();
-        acceptCompletion();
+        if (openMenu === menu.id) hideMenus();
+        else showMenu(menu, btn);
+      };
+      btn.onmouseenter = () => {
+        if (openMenu && openMenu !== menu.id) showMenu(menu, btn);
+      };
+      // keyboard-only: ←/→ walk the bar, ↓ opens and enters the menu
+      btn.onkeydown = (ev) => {
+        const buttons = $$(".wb-menu-btn", bar);
+        const i = buttons.indexOf(btn);
+        if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
+          ev.preventDefault();
+          const next = buttons[(i + (ev.key === "ArrowRight" ? 1 : buttons.length - 1))
+                               % buttons.length];
+          next.focus();
+          if (openMenu) next.click();
+        } else if (ev.key === "ArrowDown") {
+          ev.preventDefault();
+          if (openMenu !== menu.id) showMenu(menu, btn);
+          focusFirstMenuItem();
+        }
+      };
+      bar.appendChild(btn);
+    });
+  }
+
+  /** Move focus into the open dropdown, so a menu is usable without a mouse. */
+  function focusFirstMenuItem() {
+    const first = $("#menuDrop .wb-menu-item:not(.disabled)");
+    if (first) first.focus();
+  }
+
+  /** ↑/↓ inside a dropdown; Escape hands focus back to the menu bar. */
+  function wireMenuKeys(drop, anchor) {
+    drop.onkeydown = (ev) => {
+      const items = $$(".wb-menu-item:not(.disabled)", drop);
+      const i = items.indexOf(document.activeElement);
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        const step = ev.key === "ArrowDown" ? 1 : items.length - 1;
+        const next = items[(Math.max(0, i) + step) % items.length];
+        if (next) next.focus();
+      } else if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        if (document.activeElement) document.activeElement.click();
       } else if (ev.key === "Escape") {
         ev.preventDefault();
-        closeAutocomplete();
+        hideMenus();
+        if (anchor) anchor.focus();
       }
-    }, true);
-
-    editor.addEventListener("input", () => {
-      const { text } = currentPrefix();
-      if (text.length >= 2) openAutocomplete(false);
-      else closeAutocomplete();
-    });
-
-    // --- hover ---
-    editor.addEventListener("mousemove", (ev) => {
-      if (!isEpsilon()) { editor.classList.remove("linking"); hideTip(); return; }
-      if (ev.ctrlKey || ev.metaKey) editor.classList.add("linking");
-      else editor.classList.remove("linking");
-      clearTimeout(hoverTimer);
-      const off = offsetAtPoint(ev.clientX, ev.clientY);
-      const w = off == null ? null : wordAt(off);
-      if (!w) { hideTip(); return; }
-      if (w.word === hoverWord) return;
-      hoverWord = w.word;
-      const { clientX, clientY } = ev;
-      hoverTimer = setTimeout(() => showTipFor(w.word, clientX, clientY), 320);
-    });
-    editor.addEventListener("mouseleave", () => {
-      clearTimeout(hoverTimer);
-      hideTip();
-      editor.classList.remove("linking");
-    });
-    window.addEventListener("keyup", (ev) => {
-      if (!ev.ctrlKey && !ev.metaKey) editor.classList.remove("linking");
-    });
-
-    // --- ctrl/cmd + click: go to definition ---
-    editor.addEventListener("mousedown", (ev) => {
-      const mod = isMac ? ev.metaKey : ev.ctrlKey;
-      if (!mod) return;
-      const off = offsetAtPoint(ev.clientX, ev.clientY);
-      const w = off == null ? null : wordAt(off);
-      if (!w) return;
-      ev.preventDefault();
-      hideTip();
-      goToDefinition(w.word);
-    });
-
-    // --- the mathematics inside Python/C++ source ---
-    // select an arithmetic expression in a py/cpp buffer and its typeset
-    // form appears beside it. Selection only, and only what parses as
-    // mathematics: wrong mathematics on screen would be worse than none.
-    editor.addEventListener("mouseup", (ev) => queueMathOverlay(ev.clientX, ev.clientY));
-    editor.addEventListener("keyup", (ev) => {
-      if (ev.shiftKey || ev.key === "Shift") queueMathOverlay();
-    });
-    ["input", "scroll", "blur"].forEach((evt) =>
-      editor.addEventListener(evt, hideMathOverlay));
-
-    // --- console ---
-    consoleInput.addEventListener("input", autosizeConsoleInput);
-    consoleInput.addEventListener("keydown", async (ev) => {
-      if (ev.key === "Enter" && !ev.shiftKey) {
-        ev.preventDefault();
-        const code = consoleInput.value.trim();
-        if (!code) return;
-        consoleInput.value = "";
-        autosizeConsoleInput();
-        await runConsole(code);
-      } else if (ev.key === "Tab") {
-        ev.preventDefault();
-        if (consoleMode === "python") {
-          const at = consoleInput.selectionStart;
-          consoleInput.value = consoleInput.value.slice(0, at) + "    " +
-            consoleInput.value.slice(consoleInput.selectionEnd);
-          consoleInput.selectionStart = consoleInput.selectionEnd = at + 4;
-        } else {
-          consoleComplete();
-        }
-      } else if (ev.key === "ArrowUp" && !consoleInput.value.includes("\n")) {
-        if (histIdx > 0) {
-          histIdx--;
-          consoleInput.value = consoleHistory[histIdx] || "";
-          autosizeConsoleInput();
-        }
-      } else if (ev.key === "ArrowDown" && !consoleInput.value.includes("\n")) {
-        if (histIdx < consoleHistory.length) {
-          histIdx++;
-          consoleInput.value = consoleHistory[histIdx] || "";
-          autosizeConsoleInput();
-        }
-      }
-    });
-    $("#consoleClear").onclick = clearConsole;
-
-    // --- graph tools ---
-    wireGraphFilters();
-    $("#graphFit").onclick = fitGraphView;
-    $("#graphReset").onclick = resetGraphView;
-
-    window.addEventListener("resize", () => {
-      measureText();
-      updateCaret();
-      if (EpsilonPanes.isOpen("deps")) drawGraph();
-    });
-  }
-
-
-  /* ===================================================================
-   * Rendered mathematics pane
-   *
-   * The same declarations the kernel checked, typeset. MathML, which the
-   * browser draws itself — the IDE ships no typesetting library. The source
-   * is never rewritten to make a rendering work; this is a layer over it,
-   * and each block keeps the status the engine reported.
-   * =================================================================== */
-  const render = { blocks: [], latex: "", showSource: false, busy: false };
-
-  async function refreshRender() {
-    const tab = currentTab();
-    const body = $("#renderBody");
-    if (!body) return;
-    if (!tab || !isEpsilon()) {
-      body.innerHTML = "";
-      body.appendChild(el("div", "empty-hint",
-        "Open an Epsilon file to see it typeset."));
-      return;
-    }
-    if (render.busy) return;
-    render.busy = true;
-    let r;
-    try {
-      r = await api("POST", "/api/render", { path: tab.path, content: tab.content });
-    } finally {
-      render.busy = false;
-    }
-    render.blocks = (r && r.blocks) || [];
-    render.latex = (r && r.document_latex) || "";
-    renderRendered(r && r.diagnostics);
-  }
-
-  function renderRendered(diagnostics) {
-    const body = $("#renderBody");
-    if (!body) return;
-    body.innerHTML = "";
-
-    if (!render.blocks.length) {
-      const why = (diagnostics || []).find((d) => d.severity === "error");
-      body.appendChild(el("div", "empty-hint", why
-        ? "Nothing to render yet — the file has an error: " + why.message
-        : "No definitions or theorems in this file yet."));
-      return;
-    }
-
-    render.blocks.forEach((b) => {
-      const card = el("div", "render-block");
-
-      const head = el("div", "render-head");
-      head.appendChild(el("span", "render-kind", b.kind));
-      head.appendChild(el("span", "render-name", b.title || b.name));
-      if (b.display_name && b.display_name !== b.name)
-        head.appendChild(el("code", "render-ident", b.name));
-      if (b.status_label)
-        head.appendChild(el("span", "status-chip " + b.status, b.status_label));
-      head.onclick = () => { if (b.span && b.span[0]) gotoSpan(b.span); };
-      head.title = "Go to the source";
-      card.appendChild(head);
-
-      if (b.doc) card.appendChild(el("div", "render-doc", b.doc));
-
-      card.appendChild(renderMath(b.type, b.statement));
-      if (b.value) card.appendChild(renderMath(b.value, null, "definition"));
-
-      if (b.axioms && b.axioms.length) {
-        card.appendChild(el("div", "render-axioms",
-          "depends on: " + b.axioms.join(", ")));
-      }
-      body.appendChild(card);
-    });
-  }
-
-  function renderMath(forms, sourceText, cls) {
-    const wrap = el("div", "render-math" + (cls ? " " + cls : ""));
-    if (forms && forms.mathml) {
-      const m = el("div", "math-render");
-      m.innerHTML = forms.mathml;
-      wrap.appendChild(m);
-    }
-    if (render.showSource) {
-      const src = sourceText || (forms && forms.latex) || "";
-      if (src) wrap.appendChild(el("code", "render-source", src));
-    }
-    return wrap;
-  }
-
-  /* ===================================================================
-   * CAS pane
-   *
-   * Computer algebra, kept visibly separate from proof. Every result is
-   * labelled with the status the engine reports, and the label for a CAS
-   * answer is "Symbolically Verified" — never "Formally Proven". The two
-   * are different claims and the IDE never blurs them.
-   * =================================================================== */
-  const cas = { ops: [], history: [], busy: false };
-
-  async function loadCasOperations() {
-    if (cas.ops.length) return cas.ops;
-    const r = await api("GET", "/api/cas/operations");
-    cas.ops = r.operations || [];
-    const select = $("#casOp");
-    if (select) {
-      select.innerHTML = "";
-      cas.ops.forEach((o) => {
-        const opt = el("option", null, o.label);
-        opt.value = o.op;
-        opt.title = o.description;
-        select.appendChild(opt);
-      });
-      select.onchange = syncCasFields;
-    }
-    syncCasFields();
-    return cas.ops;
-  }
-
-  /** Only show the inputs the chosen operation actually reads. */
-  function syncCasFields() {
-    const op = $("#casOp") && $("#casOp").value;
-    const spec = cas.ops.find((o) => o.op === op);
-    const wantsPoint = op === "limit" || op === "taylor" || op === "evaluate";
-    const wantsOrder = op === "taylor";
-    const wantsVar = spec ? spec.needs_variable : false;
-    const show = (sel, on) => {
-      const e = $(sel);
-      if (e) e.classList.toggle("hidden", !on);
-    };
-    show("#casVar", wantsVar);
-    show("#casPoint", wantsPoint);
-    show("#casOrder", wantsOrder);
-    const hint = $("#casHint");
-    if (hint) hint.textContent = spec ? spec.description : "";
-    const point = $("#casPoint");
-    if (point) {
-      point.placeholder = op === "evaluate" ? "value of the variable" : "0";
-    }
-  }
-
-  async function runCas() {
-    if (cas.busy) return;
-    const expr = ($("#casExpr").value || "").trim();
-    if (!expr) return;
-    const op = $("#casOp").value;
-    cas.busy = true;
-    $("#casRun").classList.add("running");
-    let r;
-    try {
-      r = await api("POST", "/api/cas", {
-        op,
-        expr,
-        variable: ($("#casVar").value || "").trim() || null,
-        point: ($("#casPoint").value || "").trim() || "0",
-        order: Number($("#casOrder").value) || 5,
-      });
-    } finally {
-      cas.busy = false;
-      $("#casRun").classList.remove("running");
-    }
-    cas.history.unshift({ expr, ...r });
-    renderCas();
-  }
-
-  function renderCas() {
-    const panel = $("#casResults");
-    if (!panel) return;
-    panel.innerHTML = "";
-    if (!cas.history.length) {
-      panel.appendChild(el("div", "empty-hint",
-        "A CAS result is Symbolically Verified, never a formal proof."));
-      return;
-    }
-    cas.history.forEach((h, idx) => panel.appendChild(casCard(h, idx)));
-  }
-
-  function casCard(h, idx) {
-    const card = el("div", "cas-card" + (h.ok ? "" : " failed"));
-
-    const head = el("div", "cas-card-head");
-    head.appendChild(el("span", "cas-op-label", h.label || h.op));
-    if (h.ok) {
-      const chip = el("span", "status-chip " + h.status, h.status_label);
-      chip.title = "Computer algebra, not a kernel proof";
-      head.appendChild(chip);
-    }
-    const drop = el("button", "mini-btn", "×");
-    drop.title = "Remove";
-    drop.onclick = () => { cas.history.splice(idx, 1); renderCas(); };
-    head.appendChild(drop);
-    card.appendChild(head);
-
-    card.appendChild(mathRow("input", h.expr, h.input));
-
-    if (!h.ok) {
-      card.appendChild(el("div", "cas-error", h.message || "failed"));
-      return card;
-    }
-
-    if (h.result) card.appendChild(mathRow("result", null, h.result));
-    (h.results || []).forEach((t, i) =>
-      card.appendChild(mathRow(`solution ${i + 1}`, null, t)));
-    if (h.note) card.appendChild(el("div", "cas-note", h.note));
-
-    const actions = el("div", "cas-actions");
-    const first = h.result || (h.results || [])[0];
-    if (first) {
-      const insert = el("button", "chip-btn", "Insert in editor");
-      insert.onclick = () => insertAtCaret(first.source);
-      actions.appendChild(insert);
-      const copyLatex = el("button", "chip-btn", "Copy LaTeX");
-      copyLatex.onclick = () => {
-        if (navigator.clipboard) navigator.clipboard.writeText(first.latex || "");
-        toast("LaTeX copied", "ok");
-      };
-      actions.appendChild(copyLatex);
-      if (first.python) {
-        const copyPy = el("button", "chip-btn", "Copy Python");
-        copyPy.title = "The result as runnable Python (math module)";
-        copyPy.onclick = () => {
-          if (navigator.clipboard) navigator.clipboard.writeText(first.python);
-          toast("Python copied", "ok");
-        };
-        actions.appendChild(copyPy);
-      }
-    }
-    card.appendChild(actions);
-    return card;
-  }
-
-  /**
-   * A term shown as rendered mathematics with its Epsilon source beneath.
-   * Rendering is MathML, which browsers draw natively — the IDE ships no
-   * external typesetting library, and the source is never rewritten to make
-   * the rendering work.
-   */
-  function mathRow(label, fallbackSource, forms) {
-    const row = el("div", "cas-row");
-    row.appendChild(el("span", "cas-row-label", label));
-    const body = el("div", "cas-row-body");
-    if (forms && forms.mathml) {
-      const rendered = el("div", "math-render");
-      rendered.innerHTML = forms.mathml;
-      body.appendChild(rendered);
-    }
-    const src = (forms && forms.source) || fallbackSource || "";
-    if (src) body.appendChild(el("code", "cas-source", src));
-    row.appendChild(body);
-    return row;
-  }
-
-  /** Paste text at the editor caret, the way a result should come back. */
-  function insertAtCaret(text) {
-    if (!text) return;
-    EpsilonPanes.openView("editor");
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
-    editor.value = editor.value.slice(0, start) + text + editor.value.slice(end);
-    editor.selectionStart = editor.selectionEnd = start + text.length;
-    editor.focus();
-    const tab = currentTab();
-    if (tab) {
-      tab.content = editor.value;
-      tab.dirty = tab.content !== tab.saved;
-      renderTabs();
-    }
-    renderEditor();
-    updateCaret();
-    scheduleCheck();
-  }
-
-  /* ===================================================================
-   * Running programs
-   *
-   * Python and C++ execute for real — a fresh interpreter or a compiled
-   * binary — and the panel reports exactly what happened: stdout, stderr,
-   * exit code, duration. Compiler and traceback diagnostics land in the
-   * same gutter and Problems panel the Epsilon checker uses. None of this
-   * can mark anything proven; running a program is not a proof.
-   * =================================================================== */
-  const run = { busy: false, languages: null, diags: null };
-
-  const RUNNABLE = new Set(["python", "cpp"]);
-  const canRun = () => RUNNABLE.has(currentLanguage());
-
-  async function runLanguages() {
-    if (!run.languages) {
-      try {
-        run.languages = (await api("GET", "/api/run/languages")).languages || {};
-      } catch (e) { run.languages = { python: true, cpp: false }; }
-    }
-    return run.languages;
-  }
-
-  async function runCurrent() {
-    const tab = currentTab();
-    if (!tab || !canRun() || run.busy) return;
-    const language = currentLanguage();
-    const langs = await runLanguages();
-    EpsilonPanes.openView("run");
-    const out = $("#runOutput");
-    if (langs[language] === false) {
-      out.innerHTML = "";
-      out.appendChild(el("div", "run-block err",
-        language === "cpp"
-          ? "C++ needs a compiler, and this environment has none — run the " +
-            "local server build (epsilon serve) for C++."
-          : `${language} is not runnable here`));
-      setRunStatus("");
-      return;
-    }
-
-    run.busy = true;
-    $("#runBtn").classList.add("running");
-    out.innerHTML = "";
-    out.appendChild(el("div", "run-block dim", "running " + tab.path + " …"));
-    setRunStatus("");
-    let r;
-    try {
-      r = await api("POST", "/api/run", {
-        language,
-        code: tab.content,
-        stdin: $("#runStdinToggle").checked ? $("#runStdin").value : "",
-        filename: tab.path.split("/").pop(),
-      });
-    } finally {
-      run.busy = false;
-      $("#runBtn").classList.remove("running");
-    }
-    renderRunResult(tab, r);
-  }
-
-  //: epsilon.plot()'s stdout marker (epsilon/plotout.py) — one series per line
-  const PLOT_MARKER = "##epsilon:plot##";
-
-  /** Lift plot-marker lines out of a run's stdout.
-
-      Returns the remaining text and the plot spec they add up to — the same
-      spec shape the `plot` command produces, so the Plot pane needs nothing
-      new to draw a Python program's data. */
-  function extractRunPlots(stdout) {
-    if (!stdout || stdout.indexOf(PLOT_MARKER) === -1) {
-      return { text: stdout, spec: null };
-    }
-    const kept = [];
-    const series = [];
-    stdout.split("\n").forEach((line) => {
-      if (!line.startsWith(PLOT_MARKER)) { kept.push(line); return; }
-      try {
-        const s = JSON.parse(line.slice(PLOT_MARKER.length));
-        series.push({ label: s.label || `series ${series.length + 1}`,
-                      x: s.x || [], y: s.y || [] });
-      } catch (e) { kept.push(line); }     // malformed: it is just output
-    });
-    if (!series.length) return { text: stdout, spec: null };
-    const xs = series.flatMap((s) => s.x).filter((v) => isFinite(v));
-    return {
-      text: kept.join("\n").replace(/\n+$/, "\n"),
-      spec: { kind: "plot2d", var: "x",
-              lo: xs.length ? Math.min(...xs) : 0,
-              hi: xs.length ? Math.max(...xs) : 1,
-              series },
     };
   }
 
-  function renderRunResult(tab, r) {
-    const out = $("#runOutput");
-    out.innerHTML = "";
-    const lifted = extractRunPlots(r.stdout);
-    r = { ...r, stdout: lifted.text };
-    if (lifted.spec) {
-      renderPlots([lifted.spec]);
-      EpsilonPanes.openView("plot");
-      out.appendChild(el("div", "run-block dim",
-        `${lifted.spec.series.length} plot ` +
-        `series → Plot pane (epsilon.plot)`));
-    }
-    if (r.message) out.appendChild(el("div", "run-block err", r.message));
-    if (r.stdout) out.appendChild(el("pre", "run-block", r.stdout));
-    if (r.stderr) out.appendChild(el("pre", "run-block err", r.stderr));
-    if (!r.message && !r.stdout && !r.stderr) {
-      out.appendChild(el("div", "run-block dim", "(no output)"));
-    }
-    const bits = [];
-    if (r.phase === "compile") bits.push("failed to compile");
-    else if (r.exit_code != null) bits.push("exit " + r.exit_code);
-    if (r.duration_ms != null) bits.push(r.duration_ms + " ms");
-    bits.push(LANGUAGE_LABEL[r.language] || r.language);
-    setRunStatus(bits.join(" · "), r.ok);
-
-    // compiler / traceback diagnostics land where the checker's do —
-    // remembered per file, because the debounced check pass also repaints
-    // the Problems panel and must not wipe them
-    run.diags = { path: tab.path, diagnostics: r.diagnostics || [] };
-    if (tab.path === state.active) applyRunDiagnostics();
-  }
-
-  function applyRunDiagnostics() {
-    const d = run.diags && run.diags.path === state.active
-      ? run.diags.diagnostics : [];
-    errorLines = new Set(d.filter((x) => x.severity === "error")
-      .map((x) => x.span && x.span[0]).filter(Boolean));
-    renderEditor();
-    renderProblems(d);
-  }
-
-  function setRunStatus(text, ok) {
-    const bar = $("#runStatus");
-    if (!bar) return;
-    bar.textContent = text || "";
-    bar.className = "run-status" + (text ? (ok ? " ok" : " err") : "");
-  }
-
-  /* ===================================================================
-   * The mathematics inside Python/C++ source
-   * =================================================================== */
-  const mathOv = { timer: null, at: null, token: 0 };
-
-  function queueMathOverlay(x, y) {
-    clearTimeout(mathOv.timer);
-    const lang = currentLanguage();
-    if (lang !== "python" && lang !== "cpp") return hideMathOverlay();
-    const from = editor.selectionStart, to = editor.selectionEnd;
-    if (to - from < 3 || to - from > 200) return hideMathOverlay();
-    const text = editor.value.slice(from, to);
-    if (text.includes("\n")) return hideMathOverlay();
-    if (x != null) mathOv.at = { x, y };
-    mathOv.timer = setTimeout(() => showMathOverlay(text, lang), 260);
-  }
-
-  async function showMathOverlay(text, lang) {
-    const token = ++mathOv.token;
-    let r;
-    try {
-      r = await api("POST", "/api/mathify", { expr: text, language: lang });
-    } catch (e) { return; }
-    if (token !== mathOv.token || !r || !r.ok) return hideMathOverlay();
-    const box = $("#mathOverlay");
-    box.innerHTML = "";
-    const rendered = el("div", "math-render");
-    rendered.innerHTML = r.mathml || "";
-    box.appendChild(rendered);
-    const row = el("div", "math-overlay-actions");
-    const copy = el("button", "chip-btn", "Copy LaTeX");
-    copy.onmousedown = (e) => {
-      e.preventDefault();
-      if (navigator.clipboard) navigator.clipboard.writeText(r.latex || "");
-      toast("LaTeX copied", "ok");
-    };
-    row.appendChild(copy);
-    const toCas = el("button", "chip-btn", "Send to CAS");
-    toCas.onmousedown = async (e) => {
-      e.preventDefault();
-      hideMathOverlay();
-      EpsilonPanes.openView("cas");
-      await loadCasOperations();
-      $("#casExpr").value = r.source || text;   // the Epsilon reading of it
-      $("#casExpr").focus();
-    };
-    row.appendChild(toCas);
-    box.appendChild(row);
-    box.classList.remove("hidden");
-    const at = mathOv.at || { x: window.innerWidth / 2, y: 120 };
-    const rect = box.getBoundingClientRect();
-    box.style.left = Math.max(8, Math.min(at.x, window.innerWidth - rect.width - 12)) + "px";
-    box.style.top = Math.max(8, at.y - rect.height - 14) + "px";
-  }
-
-  function hideMathOverlay() {
-    clearTimeout(mathOv.timer);
-    const box = $("#mathOverlay");
-    if (box) box.classList.add("hidden");
-  }
-
-  /* ===================================================================
-   * Pane workspace
-   *
-   * Every tool is a view in the shared pane system rather than a panel
-   * nailed to a fixed grid slot. The view elements are the same DOM nodes
-   * the rest of this file already talks to, so nothing else has to change.
-   * =================================================================== */
-  const PANE_VIEWS = [
-    { id: "editor",    title: "Editor",     icon: "∑", element: "#viewEditor",
-      closable: false, onShow: () => { measureText(); renderEditor(); updateCaret(); } },
-    { id: "proof",     title: "Proof",      icon: "∴", element: "#proofPanel" },
-    { id: "plot",      title: "Plot",       icon: "📈", element: "#plotPanel",
-      onShow: () => { if (state.lastCheck) renderPlots(state.lastCheck.plots || []); } },
-    { id: "inspector", title: "Inspector",  icon: "🔍", element: "#inspectorPanel" },
-    { id: "problems",  title: "Problems",   icon: "⚠", element: "#problemsPanel" },
-    { id: "console",   title: "Console",    icon: "›", element: "#consolePanel" },
-    { id: "output",    title: "Output",     icon: "⎙", element: "#outputPanel" },
-    { id: "run",       title: "Run",        icon: "▶", element: "#runPanel",
-      onShow: () => { const t = $("#runTarget");
-        if (t) t.textContent = state.active || ""; } },
-    { id: "render",    title: "Rendered",   icon: "𝛴", element: "#renderPanel",
-      onShow: () => refreshRender() },
-    { id: "cas",       title: "CAS",        icon: "∫", element: "#casPanel",
-      onShow: () => { loadCasOperations(); } },
-    { id: "deps",      title: "Dependencies", icon: "◇", element: "#viewDeps",
-      onShow: () => {
-        graphSim.alpha = Math.max(graphSim.alpha, 0.9);
-        startGraph();
-        setTimeout(fitGraphView, 800);
-      } },
-  ];
-
-  function initPanes() {
-    EpsilonPanes.init({
-      host: "#paneHost",
-      vault: "#viewVault",
-      views: PANE_VIEWS,
-      onChange: () => {
-        // geometry changed: canvases and the caret need remeasuring
-        requestAnimationFrame(() => {
-          measureText();
-          updateCaret();
-          if (EpsilonPanes.isOpen("deps")) drawGraph(); else stopGraph();
-          if (state.lastCheck) renderPlots(state.lastCheck.plots || []);
+  function showMenu(menu, anchor) {
+    hideMenus();
+    openMenu = menu.id;
+    anchor.classList.add("open");
+    const drop = el("div", "wb-menu-drop");
+    drop.setAttribute("role", "menu");
+    menu.items.forEach((item) => {
+      if (item.separator) {
+        drop.appendChild(el("div", "wb-menu-sep"));
+        return;
+      }
+      if (item.recent) {
+        const sub = el("div", "wb-menu-item sub");
+        sub.appendChild(el("span", "wb-menu-label", item.submenu));
+        sub.appendChild(el("span", "wb-menu-key", "▸"));
+        const subDrop = el("div", "wb-menu-drop nested");
+        (state.recentFiles.length ? state.recentFiles : []).forEach((p) => {
+          const row = el("div", "wb-menu-item");
+          row.tabIndex = -1;
+          row.appendChild(el("span", "wb-menu-label", p));
+          row.onclick = () => { hideMenus(); openFile(p); };
+          subDrop.appendChild(row);
         });
-      },
-    });
-  }
-
-  function openPaneView(id) { EpsilonPanes.openView(id); }
-
-  /* ===================================================================
-   * wiring
-   * =================================================================== */
-  function wire() {
-    $("#checkBtn").onclick = () => { if (canRun()) runCurrent(); else runCheck(); };
-    $("#runBtn").onclick = runCurrent;
-    $("#consoleLang").onclick = () =>
-      setConsoleMode(consoleMode === "python" ? "epsilon" : "python");
-    setConsoleMode(consoleMode);
-    $("#runClear").onclick = () => {
-      $("#runOutput").innerHTML = "";
-      setRunStatus("");
-    };
-    $("#runStdinToggle").onchange = (e) =>
-      $("#runStdin").classList.toggle("hidden", !e.target.checked);
-    $("#themeBtn").onclick = toggleTheme;
-    $("#newFileBtn").onclick = () => newFile();
-    $("#newFolderBtn").onclick = () => newFolder();
-    $("#refreshFilesBtn").onclick = () => loadFiles();
-    $("#collapseAllBtn").onclick = () => {
-      (state.entries || []).forEach((e) => {
-        if (e.kind === "folder") collapsed.add(e.path);
-      });
-      persistCollapsed();
-      renderFileList();
-    };
-    $("#proofSuggest").onclick = exploreGoal;
-    $("#proofGoal").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); exploreGoal(); }
-    });
-    $("#renderRefresh").onclick = refreshRender;
-    $("#renderShowSource").onchange = (e) => {
-      render.showSource = e.target.checked;
-      renderRendered();
-    };
-    $("#renderCopyLatex").onclick = () => {
-      if (navigator.clipboard) navigator.clipboard.writeText(render.latex || "");
-      toast("LaTeX document copied", "ok");
-    };
-    $("#casRun").onclick = runCas;
-    $("#casExpr").addEventListener("keydown", (e) => {
-      if (e.key === "Enter") { e.preventDefault(); runCas(); }
-    });
-    $("#fileFilter").oninput = (e) => {
-      state.fileFilter = e.target.value;
-      renderFileList();
-    };
-    // the context menu closes on any click elsewhere, or on Escape
-    document.addEventListener("mousedown", (e) => {
-      const menu = $("#ctxMenu");
-      if (menu && !menu.classList.contains("hidden") && !menu.contains(e.target))
-        closeContextMenu();
-    });
-    $("#fileList").oncontextmenu = (e) => {
-      if (e.target.closest(".file-item")) return;   // handled per row
-      e.preventDefault();
-      openContextMenu(e.clientX, e.clientY,
-                      { name: "workspace", path: "", kind: "folder" });
-    };
-    $("#paletteBtn").onclick = () => openPalette("cmd");
-    $$(".act[data-view]").forEach((a) =>
-      (a.onclick = () => switchView(a.dataset.view)));
-
-    document.addEventListener("keydown", (e) => {
-      const mod = isMac ? e.metaKey : e.ctrlKey;
-      if (mod && e.key === "Enter") {
-        e.preventDefault();
-        if (canRun()) runCurrent(); else runCheck();
+        if (!state.recentFiles.length) {
+          subDrop.appendChild(el("div", "wb-menu-item disabled"))
+            .appendChild(el("span", "wb-menu-label", "nothing yet"));
+        }
+        sub.appendChild(subDrop);
+        drop.appendChild(sub);
+        return;
       }
-      else if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveCurrent(); }
-      else if (mod && e.shiftKey && e.key.toLowerCase() === "p") { e.preventDefault(); openPalette("cmd"); }
-      else if (mod && e.key.toLowerCase() === "p") { e.preventDefault(); openPalette("file"); }
-      else if (e.key === "Escape") { closePalette(); closeContextMenu(); }
+      const c = Commands.get(item.command);
+      if (!c) return;
+      const reason = c.whyDisabled();
+      const row = el("div", "wb-menu-item" + (reason ? " disabled" : ""));
+      row.setAttribute("role", "menuitem");
+      if (!reason) row.tabIndex = -1;          // focusable by arrow keys only
+      row.appendChild(el("span", "wb-menu-label", c.title));
+      const key = Keys.label(c.id);
+      if (key) row.appendChild(el("span", "wb-menu-key", key));
+      if (reason) row.title = reason;
+      row.onclick = () => {
+        if (reason) { notify(reason, "warn"); return; }
+        hideMenus();
+        Commands.execute(c.id);
+      };
+      drop.appendChild(row);
     });
-    window.addEventListener("resize", () => {
-      if (EpsilonPanes.isOpen("deps")) drawGraph();
+    const rect = anchor.getBoundingClientRect();
+    drop.style.left = rect.left + "px";
+    drop.style.top = rect.bottom + 2 + "px";
+    drop.id = "menuDrop";
+    document.body.appendChild(drop);
+    wireMenuKeys(drop, anchor);
+  }
+
+  function hideMenus() {
+    openMenu = null;
+    $$(".wb-menu-btn.open").forEach((b) => b.classList.remove("open"));
+    const drop = $("#menuDrop");
+    if (drop) drop.remove();
+  }
+  document.addEventListener("mousedown", (ev) => {
+    if (openMenu && !ev.target.closest("#menuDrop") &&
+        !ev.target.closest(".wb-menu-btn")) hideMenus();
+    if (!ev.target.closest("#ctxMenu")) hideContextMenu();
+  });
+
+  /* =================================================================
+   * Context menus
+   * ================================================================= */
+  function registerContextMenus() {
+    ContextMenus.register("explorer", ({ node }) => {
+      const items = [
+        { label: "New File…", run: () => newFile(node) },
+        { label: "New Folder…", run: () => newFolder(node) },
+      ];
+      if (node && node.path) {
+        items.push({ separator: true });
+        if (node.kind !== "folder") {
+          items.push({ label: "Open", run: () => openFile(node.path) });
+          items.push({ label: "Open to the Side", run: () => {
+            EpsilonPanes.splitPane("row");
+            openFile(node.path);
+          } });
+        }
+        items.push({ label: "Rename…", run: () => renameEntry(node) });
+        items.push({ label: "Duplicate", run: async () => {
+          await api("POST", "/api/duplicate", { path: node.path });
+          loadFiles();
+        } });
+        items.push({ label: "Copy Path", run: () => {
+          if (navigator.clipboard) navigator.clipboard.writeText(node.path);
+          notify("Copied " + node.path, "ok");
+        } });
+        items.push({ separator: true });
+        items.push({ label: "Delete", danger: true,
+                     run: () => deleteEntry(node) });
+      }
+      return items;
+    });
+
+    ContextMenus.register("editor", () => [
+      { command: "go.definition" },
+      { command: "go.symbol" },
+      { separator: true },
+      { command: "edit.cut" }, { command: "edit.copy" },
+      { command: "edit.paste" },
+      { separator: true },
+      { command: "edit.format" },
+      { command: "edit.toggleComment" },
+      { separator: true },
+      { command: "run.file" },
+      { command: "debug.start" },
+      { separator: true },
+      { command: "view.commandPalette" },
+    ]);
+
+    ContextMenus.register("tab", ({ path }) => [
+      { label: "Close", run: () => EpsilonPanes.closeView(path) },
+      { label: "Close Others", run: () => EpsilonPanes.closeOthers(path) },
+      { label: "Close to the Right",
+        run: () => EpsilonPanes.closeToTheRight(path) },
+      { label: "Close All", run: () => Commands.execute("file.closeAll") },
+      { separator: true },
+      { label: EpsilonPanes.isPinned(path) ? "Unpin" : "Pin",
+        run: () => EpsilonPanes.togglePin(path) },
+      { label: "Split Right", run: () => {
+        EpsilonPanes.splitPane("row", path);
+      } },
+      { separator: true },
+      { label: "Copy Path", run: () => {
+        if (navigator.clipboard) navigator.clipboard.writeText(path);
+      } },
+      { label: "Reveal in Explorer", run: () => {
+        showSidebar("explorer");
+        const row = $('#explorerList [data-path="' + path + '"]');
+        if (row) { row.scrollIntoView({ block: "center" }); row.focus(); }
+      } },
+    ]);
+
+    // the ▾ next to the Run button
+    ContextMenus.register("run", () => [
+      { command: "run.file" },
+      { command: "run.withoutDebugging" },
+      { command: "debug.start" },
+      { separator: true },
+      { command: "run.configure" },
+    ]);
+
+    // the ⚙ at the bottom of the activity bar
+    ContextMenus.register("gear", () => [
+      { command: "view.commandPalette" },
+      { separator: true },
+      { command: "tools.settings" },
+      { command: "tools.shortcuts" },
+      { command: "view.theme" },
+    ]);
+  }
+
+  function showContextMenu(contextId, x, y, ctx) {
+    hideContextMenu();
+    const items = ContextMenus.itemsFor(contextId, ctx);
+    if (!items.length) return;
+    const menu = el("div", "wb-menu-drop");
+    menu.id = "ctxMenu";
+    menu.setAttribute("role", "menu");
+    items.forEach((item) => {
+      if (item.separator) {
+        menu.appendChild(el("div", "wb-menu-sep"));
+        return;
+      }
+      let label = item.label, run = item.run, reason = null, key = "";
+      if (item.command) {
+        const c = Commands.get(item.command);
+        if (!c) return;
+        label = c.title;
+        reason = c.whyDisabled();
+        key = Keys.label(c.id);
+        run = () => Commands.execute(c.id);
+      }
+      const row = el("div", "wb-menu-item" +
+        (reason ? " disabled" : "") + (item.danger ? " danger" : ""));
+      row.setAttribute("role", "menuitem");
+      row.appendChild(el("span", "wb-menu-label", label));
+      if (key) row.appendChild(el("span", "wb-menu-key", key));
+      if (reason) row.title = reason;
+      row.onclick = () => {
+        if (reason) { notify(reason, "warn"); return; }
+        hideContextMenu();
+        run();
+      };
+      menu.appendChild(row);
+    });
+    document.body.appendChild(menu);
+    const rect = menu.getBoundingClientRect();
+    menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + "px";
+    menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + "px";
+  }
+
+  function hideContextMenu() {
+    const menu = $("#ctxMenu");
+    if (menu) menu.remove();
+  }
+
+  /* =================================================================
+   * Status bar — every segment is a live control, not a decoration
+   * ================================================================= */
+  function sbSegment(text, title, run, cls) {
+    const b = el("button", "wb-sb-seg" + (cls ? " " + cls : ""), text);
+    b.title = title || "";
+    if (run) b.onclick = run;
+    else b.disabled = true;
+    return b;
+  }
+
+  function renderStatusbar() {
+    const bar = $("#statusbar");
+    if (!bar) return;
+    bar.classList.toggle("hidden", !Settings.get("workbench.statusBar"));
+    bar.innerHTML = "";
+    const left = el("div", "wb-sb-side");
+    const right = el("div", "wb-sb-side");
+
+    // branch — click opens Source Control
+    if (git.status && git.status.branch) {
+      left.appendChild(sbSegment("⎇ " + git.status.branch,
+        "Source Control (" + (git.status.changes || []).length + " changed)",
+        () => Commands.execute("view.scm")));
+    }
+    // diagnostics — click opens the Problems panel
+    const counts = Diagnostics.count();
+    left.appendChild(sbSegment(
+      "✕ " + counts.errors + "  ⚠ " + counts.warnings,
+      "Problems — click to open", () => showPanel("problems"),
+      counts.errors ? "err" : counts.warnings ? "warn" : ""));
+    if (runState.busy) {
+      left.appendChild(sbSegment("⟳ running…", "A run is in progress", null));
+    }
+    if (dbg.id) {
+      left.appendChild(sbSegment(
+        dbg.stopped ? "⏸ paused" : "▶ debugging",
+        "Debug session — click for Run and Debug",
+        () => Commands.execute("view.runDebug"), "dbg"));
+    }
+
+    const entry = currentEditor();
+    if (entry) {
+      const pos = entry.editor.cursorPosition
+        ? entry.editor.cursorPosition() : null;
+      if (pos) {
+        right.appendChild(sbSegment(
+          "Ln " + pos.line + ", Col " + pos.col +
+            (pos.selected ? " (" + pos.selected + " selected)" : ""),
+          "Go to Line…", () => Commands.execute("go.line")));
+      }
+      right.appendChild(sbSegment(
+        (Settings.get("editor.insertSpaces") ? "Spaces: " : "Tab Size: ") +
+          Settings.get("editor.tabSize"),
+        "Indentation — click to change in Settings",
+        () => openSettingsUI("indent")));
+      right.appendChild(sbSegment("UTF-8",
+        "Files are read and written as UTF-8; other encodings are not " +
+        "supported yet", null));
+      right.appendChild(sbSegment(
+        LANGUAGE_LABEL[currentLanguage()] || "Plain Text",
+        "Language is detected from the file extension; a manual override " +
+        "does not exist yet", null));
+    }
+    right.appendChild(sbSegment(
+      state.caps ? (state.caps.terminal ? "⚡ local server" : "☁ browser") : "…",
+      state.caps
+        ? (state.caps.terminal
+           ? "Full toolchain: shell, git, debugger, formatter"
+           : "Browser build: Python runs via Pyodide; shell, git, debugger " +
+             "and C++ need the local server (pip install epsilon-math; " +
+             "epsilon ide)")
+        : "Detecting capabilities…",
+      () => notify(capabilitySummary(), "info"), "caps"));
+
+    bar.appendChild(left);
+    bar.appendChild(right);
+  }
+
+  function capabilitySummary() {
+    const c = state.caps;
+    if (!c) return "Capabilities are still loading.";
+    const yes = (v) => (v ? "yes" : "no");
+    return "This build — Python: " + yes(c.run && c.run.python) +
+      " · C++: " + yes(c.run && c.run.cpp) +
+      " · terminal: " + yes(c.terminal) +
+      " · debugger: " + yes(c.debug && c.debug.python) +
+      " · git: " + yes(c.git) +
+      " · formatter: " + yes(c.format && (c.format.python || c.format.cpp)) +
+      " · completions: " + ((c.completions && c.completions.python) || "lexical");
+  }
+
+  /* =================================================================
+   * Run button — context-aware, with a dropdown of run actions
+   * ================================================================= */
+  function renderRunButton() {
+    const host = $("#runControls");
+    if (!host) return;
+    host.innerHTML = "";
+    if (runState.busy) {
+      const stop = el("button", "wb-run-btn busy", "⏹ Stop");
+      stop.title = "A run is in progress (runs are bounded by the Run " +
+        "Timeout setting)";
+      stop.disabled = true;
+      host.appendChild(stop);
+      return;
+    }
+    const reason = runDisabledReason();
+    const main = el("button", "wb-run-btn" + (reason ? " disabled" : ""),
+      "▶ Run" + (canRun() ? " " + tabTitle(state.active) : ""));
+    main.title = reason || "Run File (" + Keys.label("run.file") + ")";
+    main.onclick = () => {
+      const r = Commands.execute("run.file");
+      if (!r.ok) notify(r.reason, "warn");
+    };
+    host.appendChild(main);
+
+    const caret = el("button", "wb-run-caret", "▾");
+    caret.title = "More run actions";
+    caret.setAttribute("aria-label", "More run actions");
+    caret.onclick = (ev) => {
+      ev.stopPropagation();
+      const rect = caret.getBoundingClientRect();
+      showContextMenu("run", rect.right - 220, rect.bottom + 4, {});
+    };
+    host.appendChild(caret);
+  }
+
+  /* =================================================================
+   * Activity bar + primary sidebar
+   * ================================================================= */
+  const sidebar = {
+    open: readJSON("epsilon.sidebar.open.v1", true),
+    view: readJSON("epsilon.sidebar.view.v1", "explorer"),
+    views: [
+      { id: "explorer", title: "Explorer", glyph: "🗎",
+        command: "view.explorer" },
+      { id: "search", title: "Search", glyph: "🔎", command: "view.search" },
+      { id: "scm", title: "Source Control", glyph: "⎇", command: "view.scm" },
+      { id: "rundebug", title: "Run and Debug", glyph: "▷",
+        command: "view.runDebug" },
+    ],
+  };
+
+  function renderActivity() {
+    const bar = $("#activitybar");
+    if (!bar) return;
+    bar.classList.toggle("hidden",
+      !Settings.get("workbench.activityBar"));
+    bar.innerHTML = "";
+    sidebar.views.forEach((v) => {
+      const b = el("button", "wb-act-btn" +
+        (sidebar.open && sidebar.view === v.id ? " active" : ""), v.glyph);
+      b.title = v.title + " (" + (Keys.label(v.command) || "") + ")";
+      b.setAttribute("aria-label", v.title);
+      if (v.id === "scm" && git.status && git.status.changes &&
+          git.status.changes.length) {
+        b.appendChild(el("span", "wb-act-badge",
+          String(git.status.changes.length)));
+      }
+      if (v.id === "rundebug" && dbg.id) {
+        b.appendChild(el("span", "wb-act-badge dbg", "●"));
+      }
+      b.onclick = () => {
+        if (sidebar.open && sidebar.view === v.id) toggleSidebar();
+        else showSidebar(v.id);
+      };
+      bar.appendChild(b);
+    });
+    const spacer = el("div", "wb-act-spacer");
+    bar.appendChild(spacer);
+    const gear = el("button", "wb-act-btn", "⚙");
+    gear.title = "Settings (" + Keys.label("tools.settings") + ")";
+    gear.setAttribute("aria-label", "Settings");
+    gear.onclick = (ev) => {
+      ev.stopPropagation();
+      const rect = gear.getBoundingClientRect();
+      showContextMenu("gear", rect.right + 4, rect.top - 8, {});
+    };
+    bar.appendChild(gear);
+  }
+
+  function showSidebar(view) {
+    sidebar.open = true;
+    if (view) sidebar.view = view;
+    writeJSON("epsilon.sidebar.open.v1", true);
+    writeJSON("epsilon.sidebar.view.v1", sidebar.view);
+    const side = $("#sidebar");
+    side.classList.remove("hidden");
+    $("#sideSash").classList.remove("hidden");
+    const spec = sidebar.views.find((v) => v.id === sidebar.view);
+    $("#sidebarTitle").textContent = spec ? spec.title.toUpperCase() : "";
+    $$(".wb-side-view").forEach((v) =>
+      v.classList.toggle("hidden", v.dataset.view !== sidebar.view));
+    if (sidebar.view === "explorer") renderExplorer();
+    if (sidebar.view === "search") renderSearchResults();
+    if (sidebar.view === "scm") refreshGit();
+    if (sidebar.view === "rundebug") renderRunDebug();
+    renderActivity();
+  }
+
+  function toggleSidebar() {
+    if (sidebar.open) {
+      sidebar.open = false;
+      writeJSON("epsilon.sidebar.open.v1", false);
+      $("#sidebar").classList.add("hidden");
+      $("#sideSash").classList.add("hidden");
+      renderActivity();
+    } else {
+      showSidebar();
+    }
+  }
+
+  /* ---------------- secondary sidebar: outline ---------------- */
+  const aux = { open: readJSON("epsilon.aux.open.v1", false) };
+
+  function toggleAux() {
+    aux.open = !aux.open;
+    writeJSON("epsilon.aux.open.v1", aux.open);
+    $("#auxbar").classList.toggle("hidden", !aux.open);
+    if (aux.open) renderOutline();
+  }
+
+  function renderOutline() {
+    if (!aux.open) return;
+    const host = $("#outlineList");
+    if (!host) return;
+    host.innerHTML = "";
+    const symbols = documentSymbols();
+    if (!symbols.length) {
+      host.appendChild(el("div", "wb-empty",
+        currentEditor()
+          ? "No symbols found in this file."
+          : "The outline shows the functions and classes of the active " +
+            "editor."));
+      return;
+    }
+    symbols.forEach((s) => {
+      const row = el("div", "wb-outline-item");
+      row.appendChild(el("span", "wb-sym-kind " + s.kind,
+        s.kind === "class" ? "◆" : "ƒ"));
+      row.appendChild(el("span", "", s.name));
+      row.onclick = () => {
+        const entry = currentEditor();
+        if (entry) entry.editor.revealLine(s.line, 1);
+      };
+      host.appendChild(row);
     });
   }
 
+  /* ---------------- zen mode ---------------- */
+  let zenSaved = null;
+
+  function toggleZen() {
+    const on = !document.body.classList.contains("wb-zen");
+    document.body.classList.toggle("wb-zen", on);
+    if (on) {
+      zenSaved = { sidebar: sidebar.open, panel: panel.open };
+      if (sidebar.open) toggleSidebar();
+      if (panel.open) togglePanel();
+      notify("Zen mode — " + Keys.label("view.zenMode") + " brings " +
+        "everything back", "info");
+    } else if (zenSaved) {
+      if (zenSaved.sidebar) showSidebar();
+      if (zenSaved.panel) showPanel();
+      zenSaved = null;
+    }
+  }
+
+  /* =================================================================
+   * Go to Definition — semantic, via jedi on the backend
+   * ================================================================= */
+  async function goToDefinition() {
+    const entry = currentEditor();
+    if (!entry) return;
+    const pos = entry.editor.cursorPosition();
+    const r = await api("POST", "/api/definition", {
+      language: currentLanguage(), code: entry.editor.getValue(),
+      line: pos.line, col: pos.col - 1, path: state.active,
+    });
+    if (!r || r.ok === false) {
+      notify((r && r.message) || "Definition lookup failed", "warn");
+      return;
+    }
+    if (!r.found) {
+      notify(r.message || "No definition found for the symbol under the " +
+        "cursor", "info");
+      return;
+    }
+    if (r.path && r.path !== state.active) {
+      await openFile(r.path);
+      const target = editors.get(r.path);
+      if (target) target.editor.revealLine(r.line, r.col || 1);
+    } else {
+      entry.editor.revealLine(r.line, r.col || 1);
+    }
+  }
+
+  /* =================================================================
+   * Layout: theme, sizes, sashes
+   * ================================================================= */
+  function applyTheme() {
+    const theme = Settings.get("workbench.theme");
+    document.documentElement.dataset.theme = theme;
+    document.body.classList.toggle("wb-reduced-motion",
+      Settings.get("workbench.reducedMotion"));
+  }
+
+  function applyLayout() {
+    const root = document.documentElement;
+    root.style.setProperty("--sidebar-w",
+      Settings.get("workbench.sidebarWidth") + "px");
+    root.style.setProperty("--panel-h",
+      Settings.get("workbench.panelHeight") + "px");
+    root.style.setProperty("--term-font",
+      Settings.get("terminal.fontSize") + "px");
+    renderActivity();
+    renderStatusbar();
+  }
+
+  /** Sidebar/panel sashes: measure on pointerdown, write styles directly
+      during the drag, persist to Settings on release (which re-applies). */
+  function wireLayoutSash(sashEl, opts) {
+    if (!sashEl) return;
+    sashEl.addEventListener("pointerdown", (ev) => {
+      ev.preventDefault();
+      sashEl.setPointerCapture(ev.pointerId);
+      const start = opts.horizontal ? ev.clientX : ev.clientY;
+      const base = Settings.get(opts.setting);
+      let value = base;
+      let raf = 0;
+      const move = (e) => {
+        const now = opts.horizontal ? e.clientX : e.clientY;
+        const delta = (now - start) * (opts.invert ? -1 : 1);
+        value = Math.round(Math.min(opts.max, Math.max(opts.min, base + delta)));
+        if (!raf) {
+          raf = requestAnimationFrame(() => {
+            raf = 0;
+            document.documentElement.style.setProperty(opts.cssVar,
+              value + "px");
+          });
+        }
+      };
+      const up = () => {
+        sashEl.removeEventListener("pointermove", move);
+        sashEl.removeEventListener("pointerup", up);
+        sashEl.removeEventListener("pointercancel", up);
+        Settings.set(opts.setting, value);
+      };
+      sashEl.addEventListener("pointermove", move);
+      sashEl.addEventListener("pointerup", up);
+      sashEl.addEventListener("pointercancel", up);
+    });
+    sashEl.addEventListener("dblclick", () => Settings.reset(opts.setting));
+  }
+
+  /* =================================================================
+   * Global keyboard dispatch — one path from key to command
+   * ================================================================= */
+  function onGlobalKey(ev) {
+    if (ev.defaultPrevented) return;
+    if (ev.key === "Escape") {
+      if (palette.open) { ev.preventDefault(); closePalette(); return; }
+      if (openMenu) { ev.preventDefault(); hideMenus(); return; }
+      if ($("#ctxMenu")) { ev.preventDefault(); hideContextMenu(); return; }
+    }
+    const chord = Keys.fromEvent(ev);
+    if (!chord) return;
+    const commandId = Keys.resolve(chord);
+    if (!commandId) return;
+    // plain printable keys stay typing, never commands
+    if (!ev.ctrlKey && !ev.metaKey && !ev.altKey && chord.length === 1) return;
+    ev.preventDefault();
+    const r = Commands.execute(commandId);
+    if (!r.ok && r.reason) {
+      const c = Commands.get(commandId);
+      notify((c ? c.title : commandId) + ": " + r.reason, "warn");
+    }
+  }
+
+  function wirePalette() {
+    const input = $("#paletteInput");
+    input.addEventListener("input", () => { palette.sel = 0; renderPalette(); });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+        ev.preventDefault();
+        const n = palette.items.length;
+        if (n) {
+          palette.sel = (palette.sel + (ev.key === "ArrowDown" ? 1 : n - 1)) % n;
+          renderPalette();
+        }
+      } else if (ev.key === "Enter") {
+        ev.preventDefault();
+        acceptPalette();
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        closePalette();
+      }
+    });
+    $("#paletteOverlay").addEventListener("mousedown", (ev) => {
+      if (ev.target === ev.currentTarget) closePalette();
+    });
+  }
+
+  function wireSearchView() {
+    const input = $("#searchInput");
+    const replace = $("#searchReplace");
+    if (!input) return;
+    let debounce = 0;
+    input.addEventListener("input", () => {
+      searchState.query = input.value;
+      clearTimeout(debounce);
+      debounce = setTimeout(runSearch, 250);
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") { ev.preventDefault(); runSearch(); }
+    });
+    if (replace) {
+      replace.addEventListener("input", () => {
+        searchState.replace = replace.value;
+      });
+    }
+    $$(".wb-search-opt").forEach((btn) => {
+      btn.onclick = () => {
+        const opt = btn.dataset.opt;
+        searchState[opt] = !searchState[opt];
+        btn.classList.toggle("active", searchState[opt]);
+        btn.setAttribute("aria-pressed", String(searchState[opt]));
+        runSearch();
+      };
+    });
+    const replaceAll = $("#searchReplaceAll");
+    if (replaceAll) replaceAll.onclick = replaceAllInFiles;
+  }
+
+  function wireDebugConsole() {
+    const input = $("#dbgInput");
+    if (!input) return;
+    input.placeholder = "Evaluate an expression (needs the debugger " +
+      "stopped at a breakpoint)";
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      const expr = input.value.trim();
+      if (!expr) return;
+      if (!dbg.id || !dbg.stopped) {
+        notify("The debugger is not stopped at a line — set a breakpoint " +
+          "in the gutter and press " + Keys.label("debug.start"), "warn");
+        return;
+      }
+      dbg.log("› " + expr, "dim");
+      dbg.command("eval", { expr });
+      input.value = "";
+    });
+  }
+
+  /* =================================================================
+   * Workspace persistence — reloading must not feel like a reset
+   * ================================================================= */
+  const WORKSPACE_KEY = "epsilon.session.v1";
+
+  function persistWorkspace() {
+    writeJSON(WORKSPACE_KEY, {
+      open: Array.from(editors.keys()),
+      active: state.active && editors.has(state.active) ? state.active : null,
+    });
+  }
+
+  async function restoreWorkspace() {
+    const saved = readJSON(WORKSPACE_KEY, null);
+    const wanted = saved && Array.isArray(saved.open) ? saved.open : [];
+    const present = new Set(state.entries.map((e) => e.path));
+    for (const path of wanted) {
+      if (present.has(path)) {
+        try { await openFile(path); } catch (e) { /* file went away */ }
+      }
+    }
+    if (editors.size) {
+      EpsilonPanes.restoreLayout();
+      if (saved.active && editors.has(saved.active)) {
+        await openFile(saved.active);
+      }
+      return;
+    }
+    // first visit: open the entry file so the IDE never starts on a void
+    const first = state.entries.find((e) => e.path === "main.py")
+      || state.entries.find((e) => RUNNABLE.has(e.language || ""));
+    if (first) await openFile(first.path);
+  }
+
+  /* =================================================================
+   * Boot
+   * ================================================================= */
   async function init() {
+    registerSettings();
+    registerCommands();
+    registerContextMenus();
+    registerMenus();
+
+    applyTheme();
+    applyLayout();
+
+    EpsilonPanes.init({
+      host: "#editorArea",
+      vault: "#viewVault",
+      profile: "empty",
+      onChange: () => {
+        const active = EpsilonPanes.activeView();
+        if (active && active !== state.active &&
+            (editors.has(active) || SPECIAL.has(active))) {
+          state.active = active;
+        }
+        refreshChrome();
+      },
+      onTabContext: (viewId, x, y) =>
+        showContextMenu("tab", x, y, { path: viewId }),
+    });
+
+    renderMenubar();
+    renderActivity();
+    renderPanel();
+    renderStatusbar();
+    renderRunButton();
+
+    wirePalette();
+    wireSearchView();
+    wireDebugConsole();
+    const wire = (sel, fn) => { const b = $(sel); if (b) b.onclick = fn; };
+    wire("#explorerNewFile", () => newFile(null));
+    wire("#explorerNewFolder", () => newFolder(null));
+    wire("#explorerRefresh", () => loadFiles());
+    wireLayoutSash($("#sideSash"), {
+      horizontal: true, setting: "workbench.sidebarWidth",
+      cssVar: "--sidebar-w", min: 160, max: 600,
+    });
+    wireLayoutSash($("#panelSash"), {
+      horizontal: false, invert: true, setting: "workbench.panelHeight",
+      cssVar: "--panel-h", min: 100, max: 800,
+    });
+
+    window.addEventListener("keydown", onGlobalKey);
+    window.addEventListener("resize", () => EpsilonPanes.render());
+    window.addEventListener("beforeunload", (ev) => {
+      if (Array.from(state.dirty.values()).some(Boolean)) {
+        ev.preventDefault();
+        ev.returnValue = "";
+      }
+    });
+    const editorArea = $("#editorArea");
+    editorArea.addEventListener("contextmenu", (ev) => {
+      if (ev.target.closest(".wb-editor-host")) {
+        ev.preventDefault();
+        showContextMenu("editor", ev.clientX, ev.clientY, {});
+      }
+    });
+
+    Settings.onChange("*", (value, id) => {
+      if (id.startsWith("editor.")) {
+        editors.forEach((entry) => entry.editor.applySettings());
+      }
+      if (id === "workbench.theme" || id === "workbench.reducedMotion") {
+        applyTheme();
+      }
+      if (id.startsWith("workbench.") || id.startsWith("terminal.")) {
+        applyLayout();
+      }
+      renderStatusbar();
+    });
+
+    Diagnostics.onChange(() => {
+      renderPanel();
+      renderStatusbar();
+      editors.forEach((entry, path) =>
+        entry.editor.setDiagnostics(Diagnostics.forPath(path)));
+    });
+
+    // capabilities decide what the UI can honestly offer
     try {
-      const saved = localStorage.getItem("epsilon-theme");
-      if (saved) document.documentElement.setAttribute("data-theme", saved);
-    } catch (e) {}
-    initPanes();
-    wire();
-    wireIntelligence();
-    state.meta = await api("GET", "/api/meta");
-    $("#metaVersion").textContent = "v" + (state.meta.version || "0.1");
+      state.caps = await api("GET", "/api/capabilities");
+    } catch (e) { state.caps = null; }
+    renderPanel();          // the terminal view depends on what caps said
+
     await loadFiles();
+    if (sidebar.open) showSidebar(sidebar.view);
+    else { $("#sidebar").classList.add("hidden");
+           $("#sideSash").classList.add("hidden"); }
+    if (aux.open) { $("#auxbar").classList.remove("hidden"); }
+
+    await restoreWorkspace();
+    if (state.caps && state.caps.git) refreshGit();
+    refreshChrome();
   }
 
-  init();
+  window.EpsilonIDE = {
+    init, openFile, notify,
+    commands: Commands, settings: Settings, keys: Keys,
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => {
+      init().catch((e) => {
+        console.error(e);
+        notify("Epsilon failed to start: " + e.message, "error");
+      });
+    });
+  } else {
+    init().catch((e) => {
+      console.error(e);
+      notify("Epsilon failed to start: " + e.message, "error");
+    });
+  }
 })();

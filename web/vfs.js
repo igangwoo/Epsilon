@@ -53,7 +53,7 @@
 
     let files = read(LS_FILES, null);
     if (!files || !Object.keys(files).length) {
-      files = { "main.epsl": welcome || "" };
+      files = { "main.py": welcome || "" };
       write(LS_FILES, files);
     }
     let dirs = read(LS_DIRS, []);

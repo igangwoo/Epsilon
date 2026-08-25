@@ -159,7 +159,7 @@ def test_language_tagging_agrees(client):
     )
     js_entries = {e["path"]: e for e in run_js(steps)[-1]["body"]["entries"]}
     py_entries = {e["path"]: e for e in run_server(client, steps)[-1]["body"]["entries"]}
-    for path in ("solve.py", "notes.md", "fast.cpp", "main.epsl"):
+    for path in ("solve.py", "notes.md", "fast.cpp", "main.py"):
         assert js_entries[path]["language"] == py_entries[path]["language"], path
 
 

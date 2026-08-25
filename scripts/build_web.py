@@ -29,11 +29,12 @@ WEB = ROOT / "web"
 SHELL = WEB / "shell"
 
 #: copied verbatim - the browser build shares these byte for byte
-VERBATIM = ("app.js", "app.css", "panes.js")
+VERBATIM = ("app.js", "app.css", "panes.js", "core.js", "editor.js")
 
 
 #: assets whose URLs carry the build id, and where each one comes from
-STAMPED_FROM_STATIC = ("app.js", "app.css", "panes.js")
+STAMPED_FROM_STATIC = ("app.js", "app.css", "panes.js",
+                       "core.js", "editor.js")
 STAMPED_FROM_WEB = ("vfs.js", "boot.js", "web.css")
 
 _BUILD_ID_LINE = re.compile(r'const BUILD_ID = "[^"]*";')
@@ -89,9 +90,9 @@ def build_index(version: str) -> str:
         raise SystemExit("index.html has no </head>")
     html = html.replace("</head>", head + "</head>", 1)
 
-    marker = '  <div class="bg-mesh"'
+    marker = '  <div id="workbench"'
     if marker not in html:
-        raise SystemExit("index.html has no .bg-mesh anchor for the boot overlay")
+        raise SystemExit("index.html has no #workbench anchor for the boot overlay")
     html = html.replace(marker, body + marker, 1)
 
     # boot.js pulls in app.js itself once the runtime is up

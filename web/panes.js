@@ -30,11 +30,15 @@
   /** Registered views: id -> {title, icon, element, onShow} */
   const views = new Map();
 
+  /** Pinned tabs survive Close Others / Close to the Right. */
+  const pinned = new Set();
+
   const state = {
     root: null,          // layout tree
     maximized: null,     // leaf id, or null
     focus: null,         // leaf id
     onChange: null,
+    onTabContext: null,  // (viewId, x, y) -> show a context menu
   };
 
   /* ---------------- registry ---------------- */
@@ -49,9 +53,11 @@
       icon: spec.icon || "",
       element,
       onShow: spec.onShow || null,
+      onClose: spec.onClose || null,
       closable: spec.closable !== false,
       badge: "",
       badgeTone: "",
+      dirty: false,
     });
     element.classList.add("pane-view");
     return true;
@@ -134,6 +140,79 @@
     l.tabs.splice(i, 1);
     if (l.active === viewId) l.active = l.tabs[Math.max(0, i - 1)] || null;
     if (!l.tabs.length) removeLeaf(l.id);
+    pinned.delete(viewId);
+    render();
+    const v = views.get(viewId);
+    if (v && v.onClose) v.onClose();
+  }
+
+  /** Close every unpinned tab in `viewId`'s group except `viewId` itself. */
+  function closeOthers(viewId) {
+    const l = leafOfView(viewId);
+    if (!l) return;
+    l.tabs.slice()
+      .filter((t) => t !== viewId && !pinned.has(t))
+      .forEach(closeView);
+  }
+
+  /** Close the unpinned tabs after `viewId` in its group. */
+  function closeToTheRight(viewId) {
+    const l = leafOfView(viewId);
+    if (!l) return;
+    const i = l.tabs.indexOf(viewId);
+    l.tabs.slice(i + 1).filter((t) => !pinned.has(t)).forEach(closeView);
+  }
+
+  /** Collapse every split into a single tab group, keeping tab order. */
+  function joinAll() {
+    const all = [];
+    leaves().forEach((l) => l.tabs.forEach((t) => all.push(t)));
+    if (!all.length) return;
+    const active = activeView() || all[0];
+    state.root = leaf(all, active);
+    state.maximized = null;
+    state.focus = state.root.id;
+    render();
+  }
+
+  /** The view showing in the focused leaf (falls back to any leaf). */
+  function activeView() {
+    const l = findLeaf(state.focus) || leaves()[0];
+    return l ? l.active : null;
+  }
+
+  function isPinned(viewId) { return pinned.has(viewId); }
+
+  function togglePin(viewId) {
+    if (pinned.has(viewId)) pinned.delete(viewId);
+    else {
+      pinned.add(viewId);
+      // pinned tabs gather at the front of their group
+      const l = leafOfView(viewId);
+      if (l) {
+        l.tabs = l.tabs.filter((t) => t !== viewId);
+        const firstUnpinned = l.tabs.findIndex((t) => !pinned.has(t));
+        l.tabs.splice(firstUnpinned < 0 ? l.tabs.length : firstUnpinned,
+                      0, viewId);
+      }
+    }
+    render();
+  }
+
+  /** Rename a view in place: registry key, layout tabs, and tab title. */
+  function renameView(oldId, newId, newTitle) {
+    const v = views.get(oldId);
+    if (!v || views.has(newId)) return;
+    views.delete(oldId);
+    v.id = newId;
+    if (newTitle) v.title = newTitle;
+    views.set(newId, v);
+    walk(state.root, (n) => {
+      if (n.type !== "leaf") return;
+      n.tabs = n.tabs.map((t) => (t === oldId ? newId : t));
+      if (n.active === oldId) n.active = newId;
+    });
+    if (pinned.has(oldId)) { pinned.delete(oldId); pinned.add(newId); }
     render();
   }
 
@@ -304,6 +383,25 @@
     tab.insertBefore(badgeEl(v), tab.querySelector(".pane-tab-close"));
   }
 
+  /**
+   * Mark a view's tab as having unsaved changes. The close box becomes the
+   * familiar dot (and turns back into × under the pointer, via CSS), so the
+   * signal costs no extra space. Updates in place — a keystroke that flips
+   * dirtiness must not rebuild the workspace.
+   */
+  function setDirty(id, dirty) {
+    const v = views.get(id);
+    if (!v || v.dirty === !!dirty) return;
+    v.dirty = !!dirty;
+    if (!host) return;
+    const tab = Array.from(host.querySelectorAll(".pane-tab"))
+      .find((t) => t.dataset.view === id);
+    if (!tab) return;
+    tab.classList.toggle("dirty", v.dirty);
+    const x = tab.querySelector(".pane-tab-close");
+    if (x) x.textContent = v.dirty ? "●" : "×";
+  }
+
   function renderLeaf(node) {
     const pane = document.createElement("div");
     pane.className = "pane" + (state.focus === node.id ? " focused" : "");
@@ -324,10 +422,17 @@
       const v = views.get(viewId);
       if (!v) return;
       const tab = document.createElement("div");
-      tab.className = "pane-tab" + (node.active === viewId ? " active" : "");
+      tab.className = "pane-tab" + (node.active === viewId ? " active" : "")
+        + (v.dirty ? " dirty" : "") + (pinned.has(viewId) ? " pinned" : "");
       tab.draggable = true;
       tab.dataset.view = viewId;
-      if (v.icon) {
+      if (pinned.has(viewId)) {
+        const pin = document.createElement("span");
+        pin.className = "pane-tab-pin";
+        pin.textContent = "📌";
+        pin.title = "Pinned — right-click to unpin";
+        tab.appendChild(pin);
+      } else if (v.icon) {
         const ic = document.createElement("span");
         ic.className = "pane-tab-icon";
         ic.textContent = v.icon;
@@ -338,7 +443,7 @@
       if (v.closable) {
         const x = document.createElement("span");
         x.className = "pane-tab-close";
-        x.textContent = "×";
+        x.textContent = v.dirty ? "●" : "×";
         x.title = "Close";
         x.onclick = (e) => { e.stopPropagation(); closeView(viewId); };
         tab.appendChild(x);
@@ -348,6 +453,18 @@
         state.focus = node.id;
         render();
       };
+      // middle click closes, like every tabbed application since forever
+      tab.addEventListener("auxclick", (e) => {
+        if (e.button === 1 && v.closable) {
+          e.preventDefault();
+          closeView(viewId);
+        }
+      });
+      tab.addEventListener("contextmenu", (e) => {
+        if (!state.onTabContext) return;
+        e.preventDefault();
+        state.onTabContext(viewId, e.clientX, e.clientY);
+      });
       tab.addEventListener("dragstart", (e) => {
         e.dataTransfer.setData("text/epsilon-view", viewId);
         e.dataTransfer.effectAllowed = "move";
@@ -372,7 +489,7 @@
     else {
       const empty = document.createElement("div");
       empty.className = "pane-empty";
-      empty.textContent = "Empty pane — open a view from the sidebar or the command palette.";
+      empty.textContent = "Open a file from the Explorer, or press Ctrl+P to jump to one.";
       body.appendChild(empty);
     }
     wireDrop(body, node);
@@ -545,8 +662,11 @@
   function normalize(node) {
     if (!node) return null;
     if (node.type === "leaf") {
+      // a group the user deliberately left empty is part of their layout;
+      // one whose every view has gone missing is not
+      const wasEmpty = !node.tabs.length;
       node.tabs = node.tabs.filter((t) => views.has(t));
-      if (!node.tabs.length) return null;
+      if (!node.tabs.length) return wasEmpty ? node : null;
       if (!views.has(node.active)) node.active = node.tabs[0];
       return node;
     }
@@ -562,6 +682,7 @@
     try {
       localStorage.setItem(LAYOUT_KEY, JSON.stringify({
         root: serialize(state.root), maximized: state.maximized,
+        pinned: Array.from(pinned),
       }));
     } catch (e) { /* private mode: layout simply is not remembered */ }
   }
@@ -575,8 +696,23 @@
       state.root = tree;
       state.maximized = findLeaf(raw.maximized) ? raw.maximized : null;
       state.focus = leaves()[0] ? leaves()[0].id : null;
+      pinned.clear();
+      (raw.pinned || []).filter((id) => views.has(id)).forEach((id) =>
+        pinned.add(id));
       return true;
     } catch (e) { return false; }
+  }
+
+  /**
+   * Re-apply the saved layout after views have been registered. The boot
+   * sequence needs this: `restore()` at init time drops tabs for views
+   * that do not exist yet, so the app registers its views first (opening
+   * files), then asks for the saved arrangement back.
+   */
+  function restoreLayout() {
+    if (!restore()) return false;
+    render();
+    return true;
   }
 
   /* ---------------- profiles ---------------- */
@@ -594,6 +730,8 @@
       leaf(["editor"]),
       split("col", leaf(["deps"]), leaf(["inspector", "proof"]), 0.6), 0.5),
     minimal: () => split("col", leaf(["editor"]), leaf(["console", "problems"]), 0.74),
+    //: the IDE workbench starts with one empty group; files fill it in
+    empty: () => leaf([]),
   };
 
   function applyProfile(name) {
@@ -616,6 +754,7 @@
     vault = typeof opts.vault === "string"
       ? document.querySelector(opts.vault) : (opts.vault || null);
     state.onChange = opts.onChange || null;
+    state.onTabContext = opts.onTabContext || null;
     (opts.views || []).forEach((v) => registerView(v.id, v));
     if (!restore()) applyProfile(opts.profile || "mathematics");
     else render();
@@ -623,7 +762,9 @@
   }
 
   const api = {
-    init, registerView, setBadge, openView, closeView, splitPane, toggleMaximize,
+    init, registerView, setBadge, setDirty, openView, closeView, closeOthers,
+    closeToTheRight, joinAll, activeView, isPinned, togglePin, renameView,
+    splitPane, toggleMaximize, restoreLayout,
     moveView, applyProfile, profileNames, viewIds, render,
     isOpen: (id) => !!leafOfView(id),
     focusView: (id) => openView(id),

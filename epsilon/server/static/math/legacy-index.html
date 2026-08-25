@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Epsilon</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c78ff'/%3E%3Ctext x='16' y='23' font-size='21' font-family='Georgia,serif' fill='white' text-anchor='middle'%3E%CE%B5%3C/text%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body>
+  <!-- animated glass background -->
+  <div class="bg-mesh" aria-hidden="true">
+    <span class="blob blob-a"></span>
+    <span class="blob blob-b"></span>
+    <span class="blob blob-c"></span>
+    <span class="blob blob-d"></span>
+  </div>
+
+  <div id="app" class="app-grid">
+    <!-- title bar -->
+    <header class="titlebar glass">
+      <div class="title-left">
+        <span class="traffic"><i class="tl tl-r"></i><i class="tl tl-y"></i><i class="tl tl-g"></i></span>
+      </div>
+      <div class="title-center">
+        <span class="brand">Epsilon</span>
+        <span class="brand-sub" id="metaVersion"></span>
+      </div>
+      <div class="title-right">
+        <button class="btn" id="checkBtn" title="Check (Ctrl/Cmd+Enter)">
+          <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 3l9 5-9 5z" fill="currentColor"/></svg>
+          <span>Check</span>
+        </button>
+        <button class="icon-btn" id="themeBtn" title="Toggle theme" aria-label="Toggle theme">
+          <svg viewBox="0 0 16 16" width="16" height="16"><path d="M6.2 1.4a6.6 6.6 0 108.4 8.4A7.2 7.2 0 016.2 1.4z" fill="currentColor"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- activity bar -->
+    <nav class="activitybar glass" aria-label="Activity">
+      <button class="act active" data-view="explorer" title="Explorer" aria-label="Explorer">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M3 4h7l2 2h9v14H3z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      </button>
+      <button class="act" data-view="theorems" title="Theorems" aria-label="Theorems">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M5 3h14v18l-7-4-7 4z" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+      </button>
+      <button class="act" data-view="graph" title="Dependency graph" aria-label="Dependency graph">
+        <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="6" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="18" cy="9" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="9" cy="18" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M8 7l8 1M8 8l1 8" stroke="currentColor" stroke-width="1.4"/></svg>
+      </button>
+      <button class="act" data-view="search" title="Search" aria-label="Search">
+        <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="10" cy="10" r="6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M15 15l5 5" stroke="currentColor" stroke-width="1.6"/></svg>
+      </button>
+      <div class="act-spacer"></div>
+      <button class="act" id="paletteBtn" title="Command palette (Ctrl/Cmd+Shift+P)" aria-label="Command palette">
+        <svg viewBox="0 0 24 24" width="22" height="22"><path d="M4 6h16M4 12h16M4 18h10" stroke="currentColor" stroke-width="1.6"/></svg>
+      </button>
+    </nav>
+
+    <!-- sidebar -->
+    <aside class="sidebar glass" id="sidebar">
+      <div class="side-panel" data-panel="explorer">
+        <div class="side-head">Explorer
+          <span class="side-head-actions">
+            <button class="mini-btn" id="newFileBtn" title="New file">+</button>
+            <button class="mini-btn" id="newFolderBtn" title="New folder">⊞</button>
+            <button class="mini-btn" id="collapseAllBtn" title="Collapse folders">⊟</button>
+            <button class="mini-btn" id="refreshFilesBtn" title="Refresh">⟳</button>
+          </span>
+        </div>
+        <input class="search-input" id="fileFilter" placeholder="filter files…" />
+        <ul class="file-list" id="fileList"></ul>
+      </div>
+      <div class="side-panel hidden" data-panel="theorems">
+        <div class="side-head">Theorems <span class="badge-counts" id="thmCounts"></span></div>
+        <ul class="thm-list" id="thmList"></ul>
+      </div>
+      <div class="side-panel hidden" data-panel="graph">
+        <div class="side-head">Dependency graph</div>
+        <input class="search-input" id="graphSearch" placeholder="focus a result…" />
+        <div class="graph-filters">
+          <label><input type="checkbox" id="gfTheorem" checked /> Theorems</label>
+          <label><input type="checkbox" id="gfAxiom" checked /> Axioms</label>
+          <label><input type="checkbox" id="gfDefinition" /> Definitions</label>
+          <label><input type="checkbox" id="gfIsolated" /> Unconnected</label>
+        </div>
+        <div class="graph-legend" id="graphLegend"></div>
+        <div class="graph-hint">Drag the background to pan, scroll to zoom,
+          drag a node to pull it out, click to inspect. Definitions are hidden
+          by default because type aliases link to nearly everything.</div>
+      </div>
+      <div class="side-panel hidden" data-panel="search">
+        <div class="side-head">Search</div>
+        <input class="search-input" id="searchInput" placeholder="theorems, definitions…" />
+        <ul class="search-results" id="searchResults"></ul>
+      </div>
+    </aside>
+
+    <!-- editor + tabs -->
+    <div class="pane-host" id="paneHost"></div>
+
+    <footer class="statusbar glass">
+      <span class="status-left">
+        <span id="checkState" class="chip">ready</span>
+        <span class="status-counts" id="statusCounts"></span>
+      </span>
+      <span class="status-right">
+        <span id="editorLanguage">Epsilon</span>
+        <span class="dot">·</span>
+        <span id="cursorPos">Ln 1, Col 1</span>
+        <span class="dot">·</span>
+        <span>Epsilon v0.1</span>
+      </span>
+    </footer>
+  </div>
+
+  <!-- command palette -->
+  <div class="palette-overlay hidden" id="paletteOverlay">
+    <div class="palette glass">
+      <input class="palette-input" id="paletteInput" placeholder="Type a command or file…" />
+      <ul class="palette-list" id="paletteList"></ul>
+    </div>
+  </div>
+
+  <!-- Pane views. These elements are re-parented into panes by panes.js;
+       they live here only so the document has somewhere to define them. -->
+  <div id="viewVault" hidden>
+    <div id="viewDeps" class="view-graph">
+      <div class="graph-tools" id="graphTools">
+        <button class="mini-btn" id="graphFit" title="Fit graph to view">⤢</button>
+        <button class="mini-btn" id="graphReset" title="Reset graph layout">⟳</button>
+      </div>
+      <canvas class="graph-canvas" id="graphCanvas"></canvas>
+    </div>
+    <div id="viewEditor" class="view-editor">
+      <div class="tabstrip glass" id="tabstrip"></div>
+      <div class="editor-wrap">
+        <div class="gutter" id="gutter"></div>
+        <div class="code-scroll" id="codeScroll">
+          <pre class="highlight" id="highlight" aria-hidden="true"><code id="highlightCode"></code></pre>
+          <textarea class="code-input" id="editor" spellcheck="false"
+            autocomplete="off" autocapitalize="off" wrap="off"></textarea>
+          <div class="caret hidden" id="caret" aria-hidden="true"></div>
+        </div>
+        <div class="autocomplete hidden" id="autocomplete" role="listbox"></div>
+      </div>
+    </div>
+    <div class="view-proof" id="proofPanel">
+      <div class="proof-bar">
+        <span class="proof-title" id="proofTitle">Proof</span>
+        <span class="render-spacer"></span>
+        <input class="proof-goal" id="proofGoal" spellcheck="false"
+          autocomplete="off" placeholder="explore a goal, e.g. a + b = b + a" />
+        <button class="chip-btn" id="proofSuggest">Suggest</button>
+      </div>
+      <div class="proof-body" id="proofBody">
+        <div class="empty-hint">Select a theorem to see its proof tree, or
+          type a goal above to see which library results apply to it.</div>
+      </div>
+    </div>
+    <div class="view-scroll" id="plotPanel">
+      <div class="empty-hint">Plots from the last check appear here.</div>
+    </div>
+    <div class="view-scroll" id="inspectorPanel">
+      <div id="inspectorSymbol"></div>
+      <div id="inspectorResults">
+        <div class="empty-hint">#check / #eval results appear here.</div>
+      </div>
+    </div>
+    <div class="view-scroll" id="problemsPanel"></div>
+    <div class="view-console" id="consolePanel">
+      <div class="console-log" id="consoleLog"></div>
+      <div class="console-input-row">
+        <button class="console-lang" id="consoleLang"
+          title="Switch console language (Epsilon / Python)">ε&gt;</button>
+        <textarea class="console-input" id="consoleInput" rows="1"
+          spellcheck="false" autocomplete="off"
+          placeholder="evaluate an expression — Enter to run, Shift+Enter for a new line, Tab to complete"></textarea>
+        <button class="mini-btn" id="consoleClear" title="Clear console">⌫</button>
+      </div>
+    </div>
+    <div class="view-scroll" id="outputPanel"></div>
+    <div class="view-render" id="renderPanel">
+      <div class="render-bar">
+        <span class="render-title">Rendered mathematics</span>
+        <label class="render-toggle"><input type="checkbox" id="renderShowSource" />
+          show source</label>
+        <span class="render-spacer"></span>
+        <button class="chip-btn" id="renderRefresh" title="Re-render">⟳</button>
+        <button class="chip-btn" id="renderCopyLatex">Copy LaTeX</button>
+      </div>
+      <div class="render-body" id="renderBody">
+        <div class="empty-hint">Check an Epsilon file to see it typeset.</div>
+      </div>
+    </div>
+    <div class="view-run" id="runPanel">
+      <div class="run-bar">
+        <button class="btn" id="runBtn">
+          <svg viewBox="0 0 16 16" width="13" height="13"><path d="M4 3l9 5-9 5z" fill="currentColor"/></svg>
+          <span id="runBtnLabel">Run</span>
+        </button>
+        <span class="run-target" id="runTarget"></span>
+        <span class="render-spacer"></span>
+        <label class="render-toggle"><input type="checkbox" id="runStdinToggle" />
+          stdin</label>
+        <button class="chip-btn" id="runClear">Clear</button>
+      </div>
+      <textarea class="run-stdin hidden" id="runStdin" spellcheck="false"
+        placeholder="what the program reads from standard input"></textarea>
+      <div class="run-output" id="runOutput">
+        <div class="empty-hint">Open a Python or C++ file and press Run.
+          Programs execute for real — output, exit code and duration are
+          reported exactly as they happened.</div>
+      </div>
+      <div class="run-status" id="runStatus"></div>
+    </div>
+    <div class="view-cas" id="casPanel">
+      <div class="cas-bar">
+        <select class="cas-op" id="casOp" aria-label="Operation"></select>
+        <input class="cas-expr" id="casExpr" spellcheck="false"
+          autocomplete="off" placeholder="an expression, e.g. (x + 1) * (x - 1)" />
+        <input class="cas-var" id="casVar" spellcheck="false"
+          autocomplete="off" placeholder="x" aria-label="Variable" />
+        <input class="cas-point" id="casPoint" spellcheck="false"
+          autocomplete="off" placeholder="0" aria-label="Point" />
+        <input class="cas-order" id="casOrder" type="number" min="1" max="12"
+          value="5" aria-label="Order" />
+        <button class="btn cas-run" id="casRun">Compute</button>
+      </div>
+      <div class="cas-hint" id="casHint"></div>
+      <div class="cas-results" id="casResults">
+        <div class="empty-hint">A CAS result is <b>Symbolically Verified</b>,
+          never a formal proof — the kernel is not involved. Proofs come from
+          the editor.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="hover-tip hidden" id="hoverTip"></div>
+
+  <!-- typeset view of a selected Python/C++ expression (a layer over the
+       source; the source itself is never touched) -->
+  <div class="math-overlay hidden" id="mathOverlay"></div>
+
+  <!-- explorer context menu -->
+  <div class="ctx-menu hidden" id="ctxMenu" role="menu"></div>
+
+  <!-- toasts -->
+  <div class="toast-stack" id="toastStack"></div>
+
+  <script src="panes.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
