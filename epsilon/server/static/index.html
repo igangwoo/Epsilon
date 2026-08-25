@@ -8,13 +8,28 @@
   <link rel="stylesheet" href="app.css" />
 </head>
 <body>
+  <!-- the colour field the workbench floats on; purely decorative -->
+  <div class="wb-aurora" aria-hidden="true">
+    <span class="wb-aurora-a"></span>
+    <span class="wb-aurora-b"></span>
+    <span class="wb-aurora-c"></span>
+  </div>
+
   <div id="workbench" class="wb-root">
 
     <!-- title bar: menus on the left, run controls in the middle-right -->
     <header id="titlebar" class="wb-titlebar">
-      <span class="wb-brand" aria-hidden="true">ε</span>
+      <span class="wb-brand" title="Epsilon">
+        <span class="wb-brand-mark" aria-hidden="true">ε</span>
+        <span class="wb-brand-name">Epsilon</span>
+      </span>
       <nav id="menubar" class="wb-menubar" role="menubar"
            aria-label="Application menu"></nav>
+      <div class="wb-title-spacer"></div>
+      <button id="quickOpen" class="wb-omni" title="Go to File (Ctrl+P)">
+        <span class="wb-omni-text">Search files and commands</span>
+        <span class="wb-omni-key">⌘P</span>
+      </button>
       <div class="wb-title-spacer"></div>
       <div id="runControls" class="wb-run-controls"></div>
     </header>
@@ -33,11 +48,11 @@
         <section class="wb-side-view" data-view="explorer">
           <div class="wb-side-actions">
             <button class="wb-icon-btn" id="explorerNewFile"
-                    title="New File" aria-label="New File">＋</button>
+                    title="New File" aria-label="New File"></button>
             <button class="wb-icon-btn" id="explorerNewFolder"
-                    title="New Folder" aria-label="New Folder">🗀</button>
+                    title="New Folder" aria-label="New Folder"></button>
             <button class="wb-icon-btn" id="explorerRefresh"
-                    title="Refresh" aria-label="Refresh Explorer">⟳</button>
+                    title="Refresh" aria-label="Refresh Explorer"></button>
           </div>
           <ul id="explorerList" class="wb-tree" role="tree"
               aria-label="Files"></ul>

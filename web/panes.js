@@ -27,6 +27,33 @@
   let uid = 0;
   const nextId = (p) => `${p}${++uid}`;
 
+  //: panes.js stays standalone (it is node-tested without a DOM), so it
+  //: carries the handful of glyphs it draws rather than importing a set
+  const GLYPH = {
+    close: '<path d="M6.8 6.8l10.4 10.4M17.2 6.8L6.8 17.2"/>',
+    dot: '<circle cx="12" cy="12" r="4" fill="currentColor" stroke="none"/>',
+    pin: '<path d="M9 3.8h6l-.8 5.1 3 3.1H6.8l3-3.1L9 3.8Z"/><path d="M12 12v8.2"/>',
+    splitRight: '<rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2.4"/><path d="M12 4.6v14.8"/>',
+    splitDown: '<rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2.4"/><path d="M3.6 12h16.8"/>',
+    maximize: '<path d="M9.4 4.6H6A1.4 1.4 0 0 0 4.6 6v3.4M14.6 4.6H18A1.4 1.4 0 0 1 19.4 6v3.4M9.4 19.4H6A1.4 1.4 0 0 1 4.6 18v-3.4M14.6 19.4H18a1.4 1.4 0 0 0 1.4-1.4v-3.4"/>',
+    restore: '<rect x="4.6" y="4.6" width="14.8" height="14.8" rx="2.2"/><path d="M8.6 8.6h6.8v6.8"/>',
+  };
+
+  function glyph(name, size) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", String(size || 14));
+    svg.setAttribute("height", String(size || 14));
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.7");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.innerHTML = GLYPH[name] || "";
+    return svg;
+  }
+
   /** Registered views: id -> {title, icon, element, onShow} */
   const views = new Map();
 
@@ -399,7 +426,10 @@
     if (!tab) return;
     tab.classList.toggle("dirty", v.dirty);
     const x = tab.querySelector(".pane-tab-close");
-    if (x) x.textContent = v.dirty ? "●" : "×";
+    if (x) {
+      x.innerHTML = "";
+      x.appendChild(glyph(v.dirty ? "dot" : "close", 13));
+    }
   }
 
   function renderLeaf(node) {
@@ -429,7 +459,7 @@
       if (pinned.has(viewId)) {
         const pin = document.createElement("span");
         pin.className = "pane-tab-pin";
-        pin.textContent = "📌";
+        pin.appendChild(glyph("pin", 12));
         pin.title = "Pinned — right-click to unpin";
         tab.appendChild(pin);
       } else if (v.icon) {
@@ -443,7 +473,7 @@
       if (v.closable) {
         const x = document.createElement("span");
         x.className = "pane-tab-close";
-        x.textContent = v.dirty ? "●" : "×";
+        x.appendChild(glyph(v.dirty ? "dot" : "close", 13));
         x.title = "Close";
         x.onclick = (e) => { e.stopPropagation(); closeView(viewId); };
         tab.appendChild(x);
@@ -477,10 +507,13 @@
     strip.appendChild(spacer);
     bar.appendChild(strip);
 
-    bar.appendChild(paneButton("◫", "Split right", () => splitPane("row", node.active)));
-    bar.appendChild(paneButton("⊟", "Split down", () => splitPane("col", node.active)));
-    bar.appendChild(paneButton(state.maximized === node.id ? "❐" : "⛶",
-                               "Maximize / restore", () => toggleMaximize(node.id)));
+    bar.appendChild(paneButton("splitRight", "Split right",
+                               () => splitPane("row", node.active)));
+    bar.appendChild(paneButton("splitDown", "Split down",
+                               () => splitPane("col", node.active)));
+    bar.appendChild(paneButton(
+      state.maximized === node.id ? "restore" : "maximize",
+      "Maximize / restore", () => toggleMaximize(node.id)));
 
     const body = document.createElement("div");
     body.className = "pane-body";
@@ -499,11 +532,12 @@
     return pane;
   }
 
-  function paneButton(glyph, title, fn) {
+  function paneButton(name, title, fn) {
     const b = document.createElement("button");
     b.className = "pane-btn";
-    b.textContent = glyph;
+    b.appendChild(glyph(name, 14));
     b.title = title;
+    b.setAttribute("aria-label", title);
     b.onclick = (e) => { e.stopPropagation(); fn(); };
     return b;
   }

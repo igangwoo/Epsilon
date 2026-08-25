@@ -5,24 +5,27 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Epsilon</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c78ff'/%3E%3Ctext x='16' y='23' font-size='21' font-family='Georgia,serif' fill='white' text-anchor='middle'%3E%CE%B5%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="app.css?v=b02b864e7e29" />
+  <link rel="stylesheet" href="app.css?v=3e8605295467" />
   <!-- web-only overrides; app.css stays the shared source of truth -->
-  <link rel="stylesheet" href="web.css?v=b02b864e7e29" />
-  <script src="vfs.js?v=b02b864e7e29"></script>
+  <link rel="stylesheet" href="web.css?v=3e8605295467" />
+  <script src="vfs.js?v=3e8605295467"></script>
   <style>
     /* one-time boot overlay while Pyodide + the engine load */
     #boot {
       position: fixed; inset: 0; z-index: 100; display: flex;
       flex-direction: column; align-items: center; justify-content: center;
-      gap: 18px; background: radial-gradient(120% 120% at 50% 0%, #12151f, #0b0d17 65%);
-      color: #eceef5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
+      gap: 18px; color: #e6e6ef;
+      background:
+        radial-gradient(940px 520px at 12% -14%, rgba(139,132,255,0.16), transparent 62%),
+        radial-gradient(820px 460px at 96% 112%, rgba(69,220,200,0.10), transparent 60%),
+        #0a0a0f; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
         system-ui, sans-serif; transition: opacity 0.4s ease;
     }
     #boot .logo {
-      width: 74px; height: 74px; border-radius: 18px; display: grid;
+      width: 74px; height: 74px; border-radius: 22px; display: grid;
       place-items: center; font: 700 42px Georgia, serif; color: #fff;
-      background: linear-gradient(140deg, #7c78ff, #38d6c8);
-      box-shadow: 0 12px 50px rgba(124, 120, 255, 0.5);
+      background: linear-gradient(145deg, #8b84ff, #45dcc8);
+      box-shadow: 0 12px 50px rgba(139, 132, 255, 0.45);
       animation: pulse 2.2s ease-in-out infinite;
     }
     @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.06); } }
@@ -30,9 +33,9 @@
     #boot .track { width: min(340px, 70vw); height: 6px; border-radius: 6px;
       background: rgba(255,255,255,0.1); overflow: hidden; }
     #bootBar { height: 100%; width: 0; border-radius: 6px;
-      background: linear-gradient(90deg, #7c78ff, #38d6c8); transition: width 0.3s ease; }
-    #bootMsg { font-size: 13px; color: #a2a6b8; }
-    #bootDetail { font-size: 11px; color: #6c7085; min-height: 14px; }
+      background: linear-gradient(90deg, #8b84ff, #45dcc8); transition: width 0.3s ease; }
+    #bootMsg { font-size: 13px; color: #a0a0b4; }
+    #bootDetail { font-size: 11px; color: #6e6e85; min-height: 14px; }
     .boot-error { max-width: 440px; margin-top: 8px; padding: 14px 16px;
       border-radius: 12px; background: rgba(255,92,114,0.12);
       border: 1px solid rgba(255,92,114,0.4); font-size: 12.5px; line-height: 1.5;
@@ -56,6 +59,13 @@
   </style>
 </head>
 <body>
+  <!-- the colour field the workbench floats on; purely decorative -->
+  <div class="wb-aurora" aria-hidden="true">
+    <span class="wb-aurora-a"></span>
+    <span class="wb-aurora-b"></span>
+    <span class="wb-aurora-c"></span>
+  </div>
+
   <div id="boot">
     <div class="logo">ε</div>
     <div class="title">Epsilon</div>
@@ -68,9 +78,17 @@
 
     <!-- title bar: menus on the left, run controls in the middle-right -->
     <header id="titlebar" class="wb-titlebar">
-      <span class="wb-brand" aria-hidden="true">ε</span>
+      <span class="wb-brand" title="Epsilon">
+        <span class="wb-brand-mark" aria-hidden="true">ε</span>
+        <span class="wb-brand-name">Epsilon</span>
+      </span>
       <nav id="menubar" class="wb-menubar" role="menubar"
            aria-label="Application menu"></nav>
+      <div class="wb-title-spacer"></div>
+      <button id="quickOpen" class="wb-omni" title="Go to File (Ctrl+P)">
+        <span class="wb-omni-text">Search files and commands</span>
+        <span class="wb-omni-key">⌘P</span>
+      </button>
       <div class="wb-title-spacer"></div>
       <div id="runControls" class="wb-run-controls"></div>
     </header>
@@ -89,11 +107,11 @@
         <section class="wb-side-view" data-view="explorer">
           <div class="wb-side-actions">
             <button class="wb-icon-btn" id="explorerNewFile"
-                    title="New File" aria-label="New File">＋</button>
+                    title="New File" aria-label="New File"></button>
             <button class="wb-icon-btn" id="explorerNewFolder"
-                    title="New Folder" aria-label="New Folder">🗀</button>
+                    title="New Folder" aria-label="New Folder"></button>
             <button class="wb-icon-btn" id="explorerRefresh"
-                    title="Refresh" aria-label="Refresh Explorer">⟳</button>
+                    title="Refresh" aria-label="Refresh Explorer"></button>
           </div>
           <ul id="explorerList" class="wb-tree" role="tree"
               aria-label="Files"></ul>
@@ -208,9 +226,9 @@
   <!-- closed views park here so their DOM survives -->
   <div id="viewVault" class="hidden" aria-hidden="true"></div>
 
-  <script src="core.js?v=b02b864e7e29"></script>
-  <script src="editor.js?v=b02b864e7e29"></script>
-  <script src="panes.js?v=b02b864e7e29"></script>
-  <script src="boot.js?v=b02b864e7e29"></script>
+  <script src="core.js?v=3e8605295467"></script>
+  <script src="editor.js?v=3e8605295467"></script>
+  <script src="panes.js?v=3e8605295467"></script>
+  <script src="boot.js?v=3e8605295467"></script>
 </body>
 </html>

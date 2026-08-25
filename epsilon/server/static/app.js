@@ -27,6 +27,81 @@
     if (txt != null) e.textContent = txt;
     return e;
   };
+  /* =================================================================
+   * Icons
+   *
+   * One coherent stroked set, drawn on a 24-unit grid at a single
+   * weight. Emoji were standing in before, and they are the wrong tool:
+   * every platform draws them differently, they carry their own colour,
+   * and no two line up on the same optical baseline.
+   * ================================================================= */
+  const ICONS = {
+    files: '<path d="M8.5 3.5h4.7L17 7.3v9.2a1.5 1.5 0 0 1-1.5 1.5H8.5A1.5 1.5 0 0 1 7 16.5V5a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="M13 3.6V7.5h3.9"/><path d="M4.3 8.4v11.1a1.5 1.5 0 0 0 1.5 1.5h7.4"/>',
+    search: '<circle cx="10.7" cy="10.7" r="6.2"/><path d="M15.3 15.3l4.4 4.4"/>',
+    branch: '<circle cx="7" cy="5.6" r="2.3"/><circle cx="7" cy="18.4" r="2.3"/><circle cx="17" cy="8.6" r="2.3"/><path d="M7 7.9v8.2"/><path d="M17 10.9c0 3.3-3 4.4-6.2 4.9"/>',
+    debug: '<circle cx="12" cy="12" r="8.3"/><path d="M10.3 8.7l5.4 3.3-5.4 3.3V8.7Z" fill="currentColor" stroke="none"/>',
+    gear: '<circle cx="12" cy="12" r="2.9"/><path d="M19 13.9a1.5 1.5 0 0 0 .3 1.7l.1.1a1.8 1.8 0 1 1-2.6 2.6l-.1-.1a1.5 1.5 0 0 0-2.6 1.1v.3a1.8 1.8 0 1 1-3.6 0v-.2a1.5 1.5 0 0 0-2.6-1.1l-.1.1a1.8 1.8 0 1 1-2.6-2.6l.1-.1A1.5 1.5 0 0 0 4.9 13H4.6a1.8 1.8 0 1 1 0-3.6h.2a1.5 1.5 0 0 0 1.1-2.6l-.1-.1a1.8 1.8 0 1 1 2.6-2.6l.1.1A1.5 1.5 0 0 0 11 5.1v-.3a1.8 1.8 0 1 1 3.6 0V5a1.5 1.5 0 0 0 2.6 1.1l.1-.1a1.8 1.8 0 1 1 2.6 2.6l-.1.1a1.5 1.5 0 0 0 1.1 2.6h.3a1.8 1.8 0 1 1 0 3.6h-.3Z"/>',
+    plus: '<path d="M12 5.6v12.8M5.6 12h12.8"/>',
+    minus: '<path d="M5.6 12h12.8"/>',
+    folderPlus: '<path d="M4 7.2A1.6 1.6 0 0 1 5.6 5.6h3.2l1.7 2.2h7.9A1.6 1.6 0 0 1 20 9.4v7.9a1.6 1.6 0 0 1-1.6 1.6H5.6A1.6 1.6 0 0 1 4 17.3V7.2Z"/><path d="M12 11.4v4.4M9.8 13.6h4.4"/>',
+    refresh: '<path d="M19.4 12a7.4 7.4 0 1 1-2.2-5.2"/><path d="M19.7 5.2v4.2h-4.2"/>',
+    close: '<path d="M6.8 6.8l10.4 10.4M17.2 6.8L6.8 17.2"/>',
+    chevronRight: '<path d="M9.8 6.2l5.8 5.8-5.8 5.8"/>',
+    chevronDown: '<path d="M6.2 9.8l5.8 5.8 5.8-5.8"/>',
+    pin: '<path d="M9 3.8h6l-.8 5.1 3 3.1H6.8l3-3.1L9 3.8Z"/><path d="M12 12v8.2"/>',
+    splitRight: '<rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2.4"/><path d="M12 4.6v14.8"/>',
+    splitDown: '<rect x="3.6" y="4.6" width="16.8" height="14.8" rx="2.4"/><path d="M3.6 12h16.8"/>',
+    maximize: '<path d="M9.4 4.6H6a1.4 1.4 0 0 0-1.4 1.4v3.4M14.6 4.6H18A1.4 1.4 0 0 1 19.4 6v3.4M9.4 19.4H6A1.4 1.4 0 0 1 4.6 18v-3.4M14.6 19.4H18a1.4 1.4 0 0 0 1.4-1.4v-3.4"/>',
+    restore: '<rect x="4.6" y="4.6" width="14.8" height="14.8" rx="2.2"/><path d="M8.6 8.6h6.8v6.8"/>',
+    error: '<circle cx="12" cy="12" r="8.2"/><path d="M12 7.7v5M12 15.6v.7"/>',
+    warning: '<path d="M10.7 4.9 3.6 17.3a1.5 1.5 0 0 0 1.3 2.2h14.2a1.5 1.5 0 0 0 1.3-2.2L13.3 4.9a1.5 1.5 0 0 0-2.6 0Z"/><path d="M12 9.6v3.8M12 16.3v.7"/>',
+    terminal: '<rect x="3.6" y="4.9" width="16.8" height="14.2" rx="2.4"/><path d="M7.6 10l2.6 2.6-2.6 2.6M12.8 15.6h4"/>',
+    bolt: '<path d="M13.4 3.6 6.2 13.2h5.1l-.7 7.2 7.2-9.6h-5.1l.7-7.2Z"/>',
+    cloud: '<path d="M7.6 18.6a4.1 4.1 0 0 1 .4-8.1 5.1 5.1 0 0 1 9.7.9 3.6 3.6 0 0 1-.9 7.2H7.6Z"/>',
+    check: '<path d="M5.2 12.4 9.7 17 18.8 7.4"/>',
+    play: '<path d="M7.6 4.9 19 12 7.6 19.1V4.9Z" fill="currentColor" stroke="none"/>',
+    resume: '<path d="M6.4 5.2v13.6" /><path d="M10.4 5.6 19.6 12l-9.2 6.4V5.6Z" fill="currentColor" stroke="none"/>',
+    stop: '<rect x="6.6" y="6.6" width="10.8" height="10.8" rx="2" fill="currentColor" stroke="none"/>',
+    pause: '<path d="M9.2 5.6v12.8M14.8 5.6v12.8"/>',
+    stepOver: '<path d="M4.8 9.6a8 8 0 0 1 14.4 3.2"/><path d="M19.4 8.4v4.6h-4.6"/><circle cx="12" cy="18" r="2.1" fill="currentColor" stroke="none"/>',
+    stepInto: '<path d="M12 4.4v8.4"/><path d="M8.6 9.6 12 13l3.4-3.4"/><circle cx="12" cy="18.4" r="2.1" fill="currentColor" stroke="none"/>',
+    stepOut: '<path d="M12 13v-8.4"/><path d="M8.6 8 12 4.6 15.4 8"/><circle cx="12" cy="18.4" r="2.1" fill="currentColor" stroke="none"/>',
+    file: '<path d="M13.2 3.6H7.6A1.6 1.6 0 0 0 6 5.2v13.6a1.6 1.6 0 0 0 1.6 1.6h8.8a1.6 1.6 0 0 0 1.6-1.6V8.4l-4.8-4.8Z"/><path d="M13.2 3.7v4.6h4.6"/>',
+    folder: '<path d="M4 7.2A1.6 1.6 0 0 1 5.6 5.6h3.2l1.7 2.2h7.9A1.6 1.6 0 0 1 20 9.4v7.9a1.6 1.6 0 0 1-1.6 1.6H5.6A1.6 1.6 0 0 1 4 17.3V7.2Z"/>',
+    fn: '<path d="M14.6 5.2h-1.2a2.6 2.6 0 0 0-2.6 2.6v9a2.6 2.6 0 0 1-2.6 2.6H7"/><path d="M7.4 11.6h7.2"/>',
+    cube: '<path d="M12 3.8 20 8v8l-8 4.2L4 16V8l8-4.2Z"/><path d="M4 8l8 4.2L20 8M12 12.2v8"/>',
+    dot: '<circle cx="12" cy="12" r="3.4" fill="currentColor" stroke="none"/>',
+  };
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+
+  /** An icon element. `size` is the box; the grid inside is always 24. */
+  function icon(name, size) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("width", String(size || 16));
+    svg.setAttribute("height", String(size || 16));
+    svg.setAttribute("fill", "none");
+    svg.setAttribute("stroke", "currentColor");
+    svg.setAttribute("stroke-width", "1.6");
+    svg.setAttribute("stroke-linecap", "round");
+    svg.setAttribute("stroke-linejoin", "round");
+    svg.setAttribute("aria-hidden", "true");
+    svg.classList.add("wb-i");
+    svg.innerHTML = ICONS[name] || "";
+    return svg;
+  }
+
+  /** A button whose whole content is one icon. */
+  function iconButton(name, title, run, cls, size) {
+    const b = el("button", cls || "wb-icon-btn");
+    b.appendChild(icon(name, size));
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    if (run) b.onclick = run;
+    return b;
+  }
+
   const esc = (s) => String(s).replace(/[&<>]/g,
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const readJSON = (key, fallback) => {
@@ -76,9 +151,8 @@
       b.onclick = () => { box.remove(); a.run(); };
       box.appendChild(b);
     });
-    const close = el("button", "toast-x", "×");
-    close.setAttribute("aria-label", "Dismiss");
-    close.onclick = () => box.remove();
+    const close = iconButton("close", "Dismiss", () => box.remove(),
+                             "toast-x", 13);
     box.appendChild(close);
     stack.appendChild(box);
     if (!actions) setTimeout(() => box.remove(), tone === "err" ? 9000 : 4500);
@@ -361,10 +435,13 @@
   const persistCollapsed = () =>
     writeJSON(COLLAPSE_KEY, Array.from(collapsed));
 
+  //: a two-or-three letter monogram, tinted per language. A row of
+  //: identical grey document icons tells you nothing; the colour is
+  //: what lets you find the C++ file in a folder of Python at a glance.
   const FILE_GLYPH = {
-    python: "py", cpp: "c++", epsilon: "ε", markdown: "md", json: "{}",
-    toml: "cfg", yaml: "yml", latex: "TeX", javascript: "js", html: "<>",
-    css: "css", shell: "$",
+    python: "PY", cpp: "C++", epsilon: "ε", markdown: "MD", json: "{}",
+    toml: "TOM", yaml: "YML", latex: "TeX", javascript: "JS", html: "<>",
+    css: "CSS", shell: "SH", plain: "TXT",
   };
 
   async function loadFiles() {
@@ -431,12 +508,17 @@
     item.tabIndex = 0;
     item.setAttribute("role", "treeitem");
     if (node.kind === "folder") {
-      item.appendChild(el("span", "wb-twisty",
-        collapsed.has(node.path) ? "▸" : "▾"));
+      const twisty = el("span", "wb-twisty");
+      twisty.appendChild(icon(
+        collapsed.has(node.path) ? "chevronRight" : "chevronDown", 13));
+      item.appendChild(twisty);
+      const fico = el("span", "wb-glyph folder");
+      fico.appendChild(icon("folder", 15));
+      item.appendChild(fico);
     } else {
       const lang = (node.entry && node.entry.language) || "plain";
       item.appendChild(el("span", "wb-glyph lang-" + lang,
-        FILE_GLYPH[lang] || "·"));
+                          FILE_GLYPH[lang] || "TXT"));
     }
     item.appendChild(el("span", "wb-file-name", node.name));
     if (state.dirty.get(node.path)) item.appendChild(el("span", "wb-dot"));
@@ -625,11 +707,8 @@
       tabs.appendChild(tab);
     });
     tabs.appendChild(el("span", "wb-panel-spacer"));
-    const kill = el("button", "wb-icon-btn", "×");
-    kill.title = "Close panel";
-    kill.setAttribute("aria-label", "Close panel");
-    kill.onclick = () => togglePanel();
-    tabs.appendChild(kill);
+    tabs.appendChild(iconButton("close", "Close panel",
+                                () => togglePanel(), "wb-icon-btn", 14));
     $$(".wb-panel-view").forEach((v) =>
       v.classList.toggle("hidden", v.dataset.panel !== panel.active));
     if (panel.active === "problems") renderProblems();
@@ -651,7 +730,7 @@
       diags.forEach((d) => {
         const row = el("div", "wb-prob-row");
         row.appendChild(el("span",
-          "wb-prob-sev " + d.severity, d.severity === "error" ? "✕" : "▲"));
+          "wb-prob-sev " + d.severity));
         row.appendChild(el("span", "wb-prob-msg", d.message));
         row.appendChild(el("span", "wb-prob-loc",
           d.span[0] + ":" + ((d.span[1] || 0) + 1)));
@@ -844,12 +923,13 @@
           "wb-term-tab" + (s.id === this.active ? " active" : ""), s.name);
         tab.onclick = () => { this.active = s.id; this.renderTabs();
                               this.renderScreen(); this.focusInput(); };
-        const x = el("span", "wb-term-x", "×");
+        const x = el("span", "wb-term-x");
+        x.appendChild(icon("close", 12));
         x.onclick = (ev) => { ev.stopPropagation(); this.kill(s.id); };
         tab.appendChild(x);
         host.appendChild(tab);
       });
-      const plus = el("button", "wb-icon-btn", "+");
+      const plus = iconButton("plus", "New Terminal", null, "wb-icon-btn", 14);
       plus.title = "New terminal";
       plus.onclick = () => Commands.execute("terminal.new");
       host.appendChild(plus);
@@ -923,7 +1003,8 @@
     renderRunButton();
     showPanel("output");
     output.clear();
-    output.write("▶ " + path + "  (" + LANGUAGE_LABEL[language] + ")", "dim");
+    output.write("\u203a " + path + "  (" + LANGUAGE_LABEL[language] + ")",
+                 "dim");
     let r;
     try {
       r = await api("POST", "/api/run", {
@@ -1062,8 +1143,10 @@
     host.innerHTML = "";
 
     const controls = el("div", "wb-dbg-controls");
-    const btn = (label, title, run, disabled) => {
-      const b = el("button", "wb-btn", label);
+    const btn = (ico, label, title, run, disabled, cls) => {
+      const b = el("button", "wb-btn" + (cls ? " " + cls : ""));
+      if (ico) b.appendChild(icon(ico, 14));
+      if (label) b.appendChild(el("span", "", label));
       b.title = title;
       b.disabled = !!disabled;
       b.onclick = run;
@@ -1071,18 +1154,19 @@
     };
     if (!dbg.id) {
       const reason = dbg.reason();
-      btn("▶ Start Debugging", reason || "F6",
-          () => Commands.execute("debug.start"), !!reason);
+      btn("play", "Start Debugging", reason || "F6",
+          () => Commands.execute("debug.start"), !!reason,
+          reason ? "" : "primary");
       if (reason) controls.appendChild(el("div", "wb-hint", reason));
     } else if (dbg.stopped) {
-      btn("⏵", "Continue (F5)", () => dbg.command("continue"));
-      btn("⤼", "Step Over (F10)", () => dbg.command("next"));
-      btn("⤵", "Step Into (F11)", () => dbg.command("step"));
-      btn("⤴", "Step Out (Shift+F11)", () => dbg.command("return"));
-      btn("⏹", "Stop (Shift+F6)", () => dbg.stop());
+      btn("resume", "", "Continue (F5)", () => dbg.command("continue"));
+      btn("stepOver", "", "Step Over (F10)", () => dbg.command("next"));
+      btn("stepInto", "", "Step Into (F11)", () => dbg.command("step"));
+      btn("stepOut", "", "Step Out (Shift+F11)", () => dbg.command("return"));
+      btn("stop", "", "Stop (Shift+F6)", () => dbg.stop(), false, "danger");
     } else {
       controls.appendChild(el("span", "wb-hint", "running…"));
-      btn("⏹", "Stop", () => dbg.stop());
+      btn("stop", "", "Stop", () => dbg.stop(), false, "danger");
     }
     host.appendChild(controls);
 
@@ -1132,8 +1216,8 @@
           const entry = editors.get(path);
           if (entry) entry.editor.revealLine(line, 1);
         });
-        const x = el("button", "wb-icon-btn", "×");
-        x.title = "Remove breakpoint";
+        const x = iconButton("close", "Remove breakpoint", null,
+                             "wb-icon-btn", 13);
         x.onclick = (ev) => {
           ev.stopPropagation();
           const entry = editors.get(path);
@@ -1315,7 +1399,9 @@
       }
     };
     msgRow.appendChild(msg);
-    const commitBtn = el("button", "wb-btn wide", "✓ Commit");
+    const commitBtn = el("button", "wb-btn primary wide");
+    commitBtn.appendChild(icon("check", 14));
+    commitBtn.appendChild(el("span", "", "Commit"));
     commitBtn.onclick = commitStaged;
     msgRow.appendChild(commitBtn);
     host.appendChild(msgRow);
@@ -1336,7 +1422,9 @@
         name.title = "Show diff";
         name.onclick = () => showDiff(c.path, stagedList);
         row.appendChild(name);
-        const act = el("button", "wb-icon-btn", stagedList ? "−" : "+");
+        const act = iconButton(stagedList ? "minus" : "plus",
+                               stagedList ? "Unstage" : "Stage", null,
+                               "wb-icon-btn", 14);
         act.title = stagedList ? "Unstage" : "Stage";
         act.onclick = async () => {
           await api("POST", "/api/git/" + (stagedList ? "unstage" : "stage"),
@@ -2035,7 +2123,9 @@
 
     /* ---- Go ---- */
     C({ id: "go.file", title: "Go to File…", category: "Go",
-        run: () => openPalette("file") });
+        run: () => openPalette("file"),
+        description: "Jump to any file by name; ':42' goes to a line" });
+    K("go.file", "Mod+P");
     C({ id: "go.symbol", title: "Go to Symbol in Editor…", category: "Go",
         run: () => openPalette("file", "@"), whyDisabled: needsEditor });
     K("go.symbol", "Mod+Shift+O");
@@ -2271,7 +2361,9 @@
       if (item.recent) {
         const sub = el("div", "wb-menu-item sub");
         sub.appendChild(el("span", "wb-menu-label", item.submenu));
-        sub.appendChild(el("span", "wb-menu-key", "▸"));
+        const chev = el("span", "wb-menu-key");
+        chev.appendChild(icon("chevronRight", 13));
+        sub.appendChild(chev);
         const subDrop = el("div", "wb-menu-drop nested");
         (state.recentFiles.length ? state.recentFiles : []).forEach((p) => {
           const row = el("div", "wb-menu-item");
@@ -2465,8 +2557,10 @@
   /* =================================================================
    * Status bar — every segment is a live control, not a decoration
    * ================================================================= */
-  function sbSegment(text, title, run, cls) {
-    const b = el("button", "wb-sb-seg" + (cls ? " " + cls : ""), text);
+  function sbSegment(text, title, run, cls, ico) {
+    const b = el("button", "wb-sb-seg" + (cls ? " " + cls : ""));
+    if (ico) b.appendChild(icon(ico, 13));
+    b.appendChild(el("span", "", text));
     b.title = title || "";
     if (run) b.onclick = run;
     else b.disabled = true;
@@ -2483,24 +2577,31 @@
 
     // branch — click opens Source Control
     if (git.status && git.status.branch) {
-      left.appendChild(sbSegment("⎇ " + git.status.branch,
+      left.appendChild(sbSegment(git.status.branch,
         "Source Control (" + (git.status.changes || []).length + " changed)",
-        () => Commands.execute("view.scm")));
+        () => Commands.execute("view.scm"), "", "branch"));
     }
     // diagnostics — click opens the Problems panel
     const counts = Diagnostics.count();
-    left.appendChild(sbSegment(
-      "✕ " + counts.errors + "  ⚠ " + counts.warnings,
-      "Problems — click to open", () => showPanel("problems"),
-      counts.errors ? "err" : counts.warnings ? "warn" : ""));
+    const diag = el("button", "wb-sb-seg wb-sb-diag" +
+      (counts.errors ? " err" : counts.warnings ? " warn" : ""));
+    diag.title = "Problems — click to open";
+    diag.onclick = () => showPanel("problems");
+    diag.appendChild(icon("error", 13));
+    diag.appendChild(el("span", "", String(counts.errors)));
+    diag.appendChild(icon("warning", 13));
+    diag.appendChild(el("span", "", String(counts.warnings)));
+    left.appendChild(diag);
     if (runState.busy) {
-      left.appendChild(sbSegment("⟳ running…", "A run is in progress", null));
+      left.appendChild(sbSegment("running…", "A run is in progress", null,
+                                 "busy", "refresh"));
     }
     if (dbg.id) {
       left.appendChild(sbSegment(
-        dbg.stopped ? "⏸ paused" : "▶ debugging",
+        dbg.stopped ? "paused" : "debugging",
         "Debug session — click for Run and Debug",
-        () => Commands.execute("view.runDebug"), "dbg"));
+        () => Commands.execute("view.runDebug"), "dbg",
+        dbg.stopped ? "pause" : "play"));
     }
 
     const entry = currentEditor();
@@ -2527,7 +2628,7 @@
         "does not exist yet", null));
     }
     right.appendChild(sbSegment(
-      state.caps ? (state.caps.terminal ? "⚡ local server" : "☁ browser") : "…",
+      state.caps ? (state.caps.terminal ? "local server" : "browser") : "…",
       state.caps
         ? (state.caps.terminal
            ? "Full toolchain: shell, git, debugger, formatter"
@@ -2535,7 +2636,8 @@
              "and C++ need the local server (pip install epsilon-math; " +
              "epsilon ide)")
         : "Detecting capabilities…",
-      () => notify(capabilitySummary(), "info"), "caps"));
+      () => notify(capabilitySummary(), "info"), "caps",
+      state.caps ? (state.caps.terminal ? "bolt" : "cloud") : "cloud"));
 
     bar.appendChild(left);
     bar.appendChild(right);
@@ -2562,7 +2664,9 @@
     if (!host) return;
     host.innerHTML = "";
     if (runState.busy) {
-      const stop = el("button", "wb-run-btn busy", "⏹ Stop");
+      const stop = el("button", "wb-run-btn busy");
+      stop.appendChild(icon("refresh", 14));
+      stop.appendChild(el("span", "", "Running…"));
       stop.title = "A run is in progress (runs are bounded by the Run " +
         "Timeout setting)";
       stop.disabled = true;
@@ -2570,8 +2674,10 @@
       return;
     }
     const reason = runDisabledReason();
-    const main = el("button", "wb-run-btn" + (reason ? " disabled" : ""),
-      "▶ Run" + (canRun() ? " " + tabTitle(state.active) : ""));
+    const main = el("button", "wb-run-btn" + (reason ? " disabled" : ""));
+    main.appendChild(icon("play", 13));
+    main.appendChild(el("span", "wb-run-label",
+      canRun() ? tabTitle(state.active) : "Run"));
     main.title = reason || "Run File (" + Keys.label("run.file") + ")";
     main.onclick = () => {
       const r = Commands.execute("run.file");
@@ -2579,7 +2685,8 @@
     };
     host.appendChild(main);
 
-    const caret = el("button", "wb-run-caret", "▾");
+    const caret = el("button", "wb-run-caret");
+    caret.appendChild(icon("chevronDown", 13));
     caret.title = "More run actions";
     caret.setAttribute("aria-label", "More run actions");
     caret.onclick = (ev) => {
@@ -2597,11 +2704,13 @@
     open: readJSON("epsilon.sidebar.open.v1", true),
     view: readJSON("epsilon.sidebar.view.v1", "explorer"),
     views: [
-      { id: "explorer", title: "Explorer", glyph: "🗎",
+      { id: "explorer", title: "Explorer", glyph: "files",
         command: "view.explorer" },
-      { id: "search", title: "Search", glyph: "🔎", command: "view.search" },
-      { id: "scm", title: "Source Control", glyph: "⎇", command: "view.scm" },
-      { id: "rundebug", title: "Run and Debug", glyph: "▷",
+      { id: "search", title: "Search", glyph: "search",
+        command: "view.search" },
+      { id: "scm", title: "Source Control", glyph: "branch",
+        command: "view.scm" },
+      { id: "rundebug", title: "Run and Debug", glyph: "debug",
         command: "view.runDebug" },
     ],
   };
@@ -2614,7 +2723,8 @@
     bar.innerHTML = "";
     sidebar.views.forEach((v) => {
       const b = el("button", "wb-act-btn" +
-        (sidebar.open && sidebar.view === v.id ? " active" : ""), v.glyph);
+        (sidebar.open && sidebar.view === v.id ? " active" : ""));
+      b.appendChild(icon(v.glyph, 19));
       b.title = v.title + " (" + (Keys.label(v.command) || "") + ")";
       b.setAttribute("aria-label", v.title);
       if (v.id === "scm" && git.status && git.status.changes &&
@@ -2633,7 +2743,8 @@
     });
     const spacer = el("div", "wb-act-spacer");
     bar.appendChild(spacer);
-    const gear = el("button", "wb-act-btn", "⚙");
+    const gear = el("button", "wb-act-btn");
+    gear.appendChild(icon("gear", 19));
     gear.title = "Settings (" + Keys.label("tools.settings") + ")";
     gear.setAttribute("aria-label", "Settings");
     gear.onclick = (ev) => {
@@ -2701,8 +2812,9 @@
     }
     symbols.forEach((s) => {
       const row = el("div", "wb-outline-item");
-      row.appendChild(el("span", "wb-sym-kind " + s.kind,
-        s.kind === "class" ? "◆" : "ƒ"));
+      const mark = el("span", "wb-sym-kind " + s.kind);
+      mark.appendChild(icon(s.kind === "class" ? "cube" : "fn", 14));
+      row.appendChild(mark);
       row.appendChild(el("span", "", s.name));
       row.onclick = () => {
         const entry = currentEditor();
@@ -2989,10 +3101,23 @@
     wirePalette();
     wireSearchView();
     wireDebugConsole();
-    const wire = (sel, fn) => { const b = $(sel); if (b) b.onclick = fn; };
-    wire("#explorerNewFile", () => newFile(null));
-    wire("#explorerNewFolder", () => newFolder(null));
-    wire("#explorerRefresh", () => loadFiles());
+    const wire = (sel, ico, fn) => {
+      const b = $(sel);
+      if (!b) return;
+      b.appendChild(icon(ico, 15));
+      b.onclick = fn;
+    };
+    const omni = $("#quickOpen");
+    if (omni) {
+      omni.onclick = () => openPalette("file");
+      const chord = Keys.label("go.file");
+      const chip = $(".wb-omni-key", omni);
+      if (chip && chord) chip.textContent = chord;
+    }
+    wire("#explorerNewFile", "plus", () => newFile(null));
+    wire("#explorerNewFolder", "folderPlus", () => newFolder(null));
+    wire("#explorerRefresh", "refresh", () => loadFiles());
+    $$(".wb-search-opt").forEach((b) => b.classList.add("wb-chip"));
     wireLayoutSash($("#sideSash"), {
       horizontal: true, setting: "workbench.sidebarWidth",
       cssVar: "--sidebar-w", min: 160, max: 600,

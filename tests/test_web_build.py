@@ -78,11 +78,15 @@ def test_build_script_runs_clean():
     assert r.returncode == 0, r.stderr
 
 
-def test_web_build_drops_the_native_window_chrome():
-    """A close button that closes nothing has no place in a browser tab."""
+def test_the_web_build_adds_only_web_chrome():
+    """A browser tab gets a link back to the source, and nothing that
+    imitates a window it does not have."""
     boot = (WEB / "boot.js").read_text()
     assert "applyWebChrome" in boot
-    assert ".traffic" in (WEB / "web.css").read_text()
+    assert "repo-link" in boot
+    assert ".repo-link" in (WEB / "web.css").read_text()
+    # no imitation window controls anywhere in the shared markup
+    assert "traffic" not in (STATIC / "index.html").read_text()
 
 
 def test_shared_markup_carries_the_workbench_frame():
