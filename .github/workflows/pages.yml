@@ -32,26 +32,22 @@ jobs:
 
       - name: Build the site
         run: |
-          python -m pip install --upgrade pip build
-          # regenerates web/ from epsilon/server/static + web/shell,
-          # and rebuilds the wheel micropip installs in the browser
-          python scripts/build_web.py --wheel
+          # web/ is authored directly; this only stamps the cache-busting
+          # build id derived from the asset contents
+          python scripts/build_web.py
 
       - name: Sanity-check the site
         run: |
           test -f web/index.html
-          test -f web/boot.js
-          test -f web/bridge.py
+          test -f web/epsilon.css
+          test -f web/editor.js
           test -f web/app.js
-          test -f web/core.js     # registries: commands, keys, settings
-          test -f web/editor.js   # the code editor
-          test -f web/panes.js
-          test -f web/app.css
-          test -f web/web.css   # web-only overrides (not copied from server)
-          ls web/epsilon_math-*.whl
-          # the generated site must match what is committed (the wheel is
-          # rebuilt here, so its bytes legitimately differ)
-          git diff --exit-code -- web/ ':(exclude)web/*.whl'
+          # the committed site must match what the script produces
+          git diff --exit-code -- web/
+          # and it must reach nothing but the Python runtime
+          ! grep -rEn 'https?://' web/*.html web/*.js web/*.css \
+            | grep -v 'cdn.jsdelivr.net/pyodide' \
+            | grep -v 'www.w3.org' || (echo "unexpected external reference"; exit 1)
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

@@ -306,10 +306,13 @@ def test_the_caret_blink_cannot_fight_its_own_motion():
                f'.ed-caret-bar {{ animation: {blink}' in css, blink
 
 def test_the_language_service_is_not_asked_on_every_keystroke():
-    """In the browser build that call runs Python on the main thread, so
-    firing it per keystroke freezes the page while typing — measured at
-    527ms on the worst keystroke before this was debounced. The local
-    half stays instant; only the round trip waits for a pause."""
+    """A language service on the keystroke path froze the page for 527ms
+    on the worst key when the runtime shared the UI thread. The local
+    half stays instant; only the round trip waits for a pause.
+
+    (The deployed build now runs no language service at all — see
+    `tests/test_lite_web.py`. This guards the local server workbench,
+    where the call is cheap but still worth not making per key.)"""
     editor = EDITOR.read_text()
     assert "SEMANTIC_DELAY" in editor
     assert "_semanticCompletion" in editor, (
@@ -320,17 +323,6 @@ def test_the_language_service_is_not_asked_on_every_keystroke():
     body = block.group(1)
     assert "setTimeout(ask, SEMANTIC_DELAY)" in body
     assert "_localCompletions" in body      # the instant half still runs
-
-
-def test_the_browser_build_paints_before_it_blocks():
-    """`runPython` is synchronous and holds the only thread. Yielding to a
-    macrotask first does not shorten the call, but it lets the keystroke
-    that triggered it appear before the pause rather than after."""
-    boot = strip_comments((ROOT / "web" / "boot.js").read_text())
-    handler = boot[boot.index("async function handleApi"):]
-    handler = handler[:handler.index("runPython")]
-    assert "setTimeout(resolve, 0)" in handler, (
-        "handleApi must yield before running Python on the main thread")
 
 
 def test_the_status_bar_is_patched_not_rebuilt_while_typing():

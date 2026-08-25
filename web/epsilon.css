@@ -1,0 +1,458 @@
+/* ===================================================================
+ * Epsilon — a light Python workbench.
+ *
+ * Ink on paper. One column, a hairline rule, and as little chrome as
+ * the job allows: the code is the page, everything else is a margin
+ * note. Colour appears only where it carries meaning — the accent for
+ * what you can act on, red for what went wrong.
+ *
+ * No web fonts. The stacks below resolve to something good on every
+ * platform and cost nothing to fetch, which matters more here than
+ * matching one designer's exact letterforms.
+ * =================================================================== */
+
+:root {
+  color-scheme: light;
+  --paper: #f2f4f5;
+  --card: #ffffff;
+  --ink: #1c2430;
+  --ghost: #bcc5cc;
+  --dim: #8d98a3;
+  --accent: #3d6e70;
+  --accent-soft: rgba(61, 110, 112, 0.1);
+  --err: #b0524a;
+  --warn: #9a6b1f;
+  --ok: #3d7a52;
+  --rule: #dee3e6;
+  --glide: cubic-bezier(0.22, 0.7, 0.2, 1);
+
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia,
+           "Times New Roman", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
+          system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+          "DejaVu Sans Mono", monospace;
+
+  --code: 14.5px;
+  --leading: 1.85;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #1f1e1b;
+  --card: #26251f;
+  --ink: #f0eee6;
+  --ghost: #716e64;
+  --dim: #a5a196;
+  --accent: #85c5c3;
+  --accent-soft: rgba(133, 197, 195, 0.13);
+  --err: #e2907f;
+  --warn: #d8b268;
+  --ok: #96c9a0;
+  --rule: #35332e;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --paper: #1f1e1b;
+    --card: #26251f;
+    --ink: #f0eee6;
+    --ghost: #716e64;
+    --dim: #a5a196;
+    --accent: #85c5c3;
+    --accent-soft: rgba(133, 197, 195, 0.13);
+    --err: #e2907f;
+    --warn: #d8b268;
+    --ok: #96c9a0;
+    --rule: #35332e;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--serif);
+  -webkit-font-smoothing: antialiased;
+  transition: background 0.35s ease, color 0.35s ease;
+}
+
+body { display: flex; flex-direction: column; overflow: hidden; }
+
+/* the small-caps label voice, used for every piece of chrome */
+.ui {
+  font-family: var(--sans);
+  font-size: 10.5px;
+  font-weight: 400;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+}
+.dim { color: var(--dim); }
+.grow { flex: 1; }
+
+button { font: inherit; color: inherit; background: none; border: 0;
+         cursor: pointer; padding: 0; }
+button:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ---- header -------------------------------------------------------- */
+
+#bar {
+  position: relative;
+  z-index: 2;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 26px;
+  height: 52px;
+  border-bottom: 1px solid var(--rule);
+}
+
+#brand { display: inline-flex; align-items: baseline; gap: 8px; user-select: none; }
+#brand i {
+  font-style: normal;
+  font-size: 19px;
+  color: var(--accent);
+}
+#brand b {
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+#files { display: flex; align-items: center; gap: 2px; margin-left: 10px;
+         overflow-x: auto; scrollbar-width: none; }
+#files::-webkit-scrollbar { display: none; }
+
+.tab {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--dim);
+  padding: 5px 11px;
+  border-radius: 999px;
+  white-space: nowrap;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+.tab:hover { color: var(--ink); }
+.tab.on { color: var(--ink); background: var(--accent-soft); }
+.tab.dirty::after { content: "·"; margin-left: 5px; color: var(--accent); }
+
+.ghost { color: var(--ghost); transition: color 0.18s ease; }
+.ghost:hover { color: var(--ink); }
+
+/* ---- the sheet ----------------------------------------------------- */
+
+#sheet {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 0 26px 18px;
+}
+
+#stage {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;          /* the windowed layers must not escape */
+  padding-top: 20px;
+}
+
+#gutter {
+  flex: none;
+  width: 46px;
+  padding-top: 2px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: var(--code);
+  line-height: var(--leading);
+  font-variant-numeric: tabular-nums;
+  color: var(--ghost);
+  user-select: none;
+  overflow: hidden;
+  will-change: transform;
+}
+.ln { padding-right: 16px; position: relative; }
+.ln.here { color: var(--dim); }
+.ln.bad { color: var(--err); }
+.ln.bad::after {
+  content: "";
+  position: absolute;
+  right: 6px; top: 50%;
+  width: 4px; height: 4px;
+  margin-top: -2px;
+  border-radius: 50%;
+  background: var(--err);
+}
+
+#page { position: relative; flex: 1; min-width: 0; }
+
+#paint, #code {
+  margin: 0;
+  padding: 2px 0 40vh;
+  font-family: var(--mono);
+  font-size: var(--code);
+  line-height: var(--leading);
+  tab-size: 4;
+  white-space: pre;
+  border: 0;
+}
+#paint {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  will-change: transform;
+}
+#paint code { font: inherit; white-space: inherit; display: block; }
+#code {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  background: none;
+  color: transparent;
+  caret-color: transparent;
+  overflow: auto;
+  outline: 0;
+}
+#code::selection { background: var(--accent-soft); }
+body.ime #code { color: var(--ink); caret-color: var(--ink); }
+body.ime #paint { opacity: 0; }
+
+/* the caret: the wrapper is moved by the glide loop, the bar blinks */
+#caret {
+  position: absolute;
+  top: 0; left: 0;
+  width: 2px;
+  pointer-events: none;
+  will-change: transform;
+}
+#caretBar {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transform-origin: 50% 50%;
+  animation: expand 1.45s cubic-bezier(0.45, 0, 0.25, 1) infinite;
+}
+@keyframes expand {
+  0%   { transform: scaleY(1); opacity: 1; }
+  50%  { transform: scaleY(0.08); opacity: 0.75; }
+  100% { transform: scaleY(1); opacity: 1; }
+}
+body.typing #caretBar { animation: none; transform: scaleY(1); opacity: 1; }
+body.away #caret, body.ime #caret { opacity: 0; }
+#caret { transition: opacity 0.2s ease; }
+body.away #paint { opacity: 0.55; }
+#paint { transition: opacity 0.25s ease; }
+
+/* A ligature occupies exactly the cells its source text does, so the
+   painted layer stays on the same grid as the textarea underneath —
+   which is what owns the caret, the selection and every click. No
+   `overflow: hidden` here on purpose: it would change the inline-block's
+   baseline and drop every ligature half a line. */
+.lg {
+  display: inline-block;
+  text-align: center;
+  vertical-align: baseline;
+}
+.lg-left { text-align: left; }   /* exponents hug the base they raise */
+
+/* syntax — four voices, no more */
+.k { color: var(--accent); }
+.s { color: var(--ok); }
+.n { color: var(--warn); }
+.c { color: var(--ghost); font-style: italic; }
+.d { color: var(--ink); font-weight: 600; }
+
+/* ---- completions --------------------------------------------------- */
+
+#hints {
+  position: absolute;
+  z-index: 30;
+  min-width: 190px;
+  max-height: 194px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.35);
+  animation: rise 0.13s var(--glide);
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+.hint {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 9px;
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.hint.on { background: var(--accent-soft); }
+.hint em { font-style: normal; color: var(--accent); }
+.hint span { margin-left: auto; color: var(--ghost); font-size: 10px;
+             font-family: var(--sans); letter-spacing: 0.08em;
+             text-transform: uppercase; }
+
+/* ---- rule, controls, output ---------------------------------------- */
+
+#rule { position: relative; height: 1px; background: var(--rule); flex: none;
+        margin-top: 14px; }
+#bar-progress {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.3s var(--glide);
+}
+#rule.busy #bar-progress {
+  width: 100%;
+  animation: sweep 1.1s ease-in-out infinite;
+  transform-origin: left;
+}
+@keyframes sweep {
+  0% { transform: scaleX(0); }
+  50% { transform: scaleX(1); }
+  100% { transform: scaleX(0); transform-origin: right; }
+}
+
+#foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding-top: 14px;
+}
+#controls { display: flex; align-items: center; gap: 10px; }
+
+#run {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 15px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--paper);
+  transition: filter 0.18s ease, transform 0.08s ease, opacity 0.18s ease;
+}
+#run:hover { filter: brightness(1.08); }
+#run:active { transform: translateY(1px); }
+#run[disabled] { opacity: 0.45; cursor: default; }
+#run .key { opacity: 0.65; letter-spacing: 0.08em; }
+
+#meta { display: flex; gap: 24px; color: var(--dim); }
+#mState.ok { color: var(--ok); }
+#mState.bad { color: var(--err); }
+#mState.busy { color: var(--accent); }
+
+#stdinRow { flex: none; display: flex; gap: 12px; padding-top: 12px;
+            align-items: flex-start; }
+#stdinRow[hidden] { display: none; }
+#stdinRow label { color: var(--dim); padding-top: 7px; }
+#stdin {
+  flex: 1;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 7px 10px;
+  resize: vertical;
+}
+#stdin:focus { outline: 0; border-color: var(--accent); }
+
+#out {
+  flex: none;
+  max-height: 34vh;
+  overflow-y: auto;
+  margin-top: 14px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#out:empty { display: none; }
+#out .line { animation: fadein 0.25s ease both; }
+#out .bad { color: var(--err); }
+#out .note { color: var(--dim); font-family: var(--sans); font-size: 11px;
+             letter-spacing: 0.1em; text-transform: uppercase; }
+#out .jump { color: var(--err); cursor: pointer; text-decoration: underline;
+             text-underline-offset: 0.18em; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---- boot ---------------------------------------------------------- */
+
+#boot {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--paper);
+  transition: opacity 0.45s ease;
+}
+#boot.gone { opacity: 0; pointer-events: none; }
+#boot .logo {
+  width: 62px; height: 62px;
+  border-radius: 18px;
+  display: grid;
+  place-items: center;
+  font: 400 34px var(--serif);
+  color: var(--paper);
+  background: var(--accent);
+}
+#boot .title { font-size: 21px; }
+#boot .track { width: min(300px, 62vw); height: 2px; background: var(--rule);
+               overflow: hidden; }
+#bootBar { height: 100%; width: 0; background: var(--accent);
+           transition: width 0.35s var(--glide); }
+#bootMsg { color: var(--dim); }
+#bootHint { max-width: 380px; text-align: center; line-height: 1.9;
+            text-transform: none; letter-spacing: 0.04em; font-size: 11px; }
+#bootHint a { color: var(--accent); }
+
+/* ---- narrow -------------------------------------------------------- */
+
+@media (max-width: 640px) {
+  #bar { padding: 0 16px; gap: 10px; }
+  #brand b { display: none; }
+  #sheet { padding: 0 16px 14px; }
+  #gutter { width: 34px; }
+  .ln { padding-right: 10px; }
+  :root { --code: 13px; }
+  #meta { gap: 14px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

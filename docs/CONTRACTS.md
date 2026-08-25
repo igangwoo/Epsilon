@@ -393,51 +393,89 @@ file, layout, sidebar, panel, and settings all survive a reload.
 
 ## Browser build - `web/`
 
-The browser-only deploy (Pyodide; no server, no install) is
-`epsilon/server/static/` plus a thin shell: `web.css` overrides, a boot
-overlay, and `boot.js`, which starts Pyodide, installs the wheel, shims
-`fetch` to route `/api/*` at `bridge.py`, adjusts the title bar for a browser
-tab, then loads the *unmodified* `app.js`.
+The deployed page is a light Python workbench: **Pyodide and nothing
+else**. Four authored files, under 140 KB in total, no build step, no
+wheel, no bridge, no engine.
 
-`python3 scripts/build_web.py [--wheel]` regenerates it. `tests/test_web_build.py`
-fails if the two builds drift.
+    index.html    the page
+    epsilon.css   ink on paper, light and dark
+    editor.js     the editor component
+    app.js        files, the runtime, run, output
 
-Two rules keep the deploy from breaking for returning visitors, whose cached
-`index.html` can be older than the scripts it pairs with:
+`python3 scripts/build_web.py` does one job: stamp `?v=<hash>` onto each
+asset URL, where the hash is taken over the asset contents. index.html
+and the scripts have separate cache lifetimes, so a returning visitor
+could otherwise hold yesterday's HTML with today's JavaScript; changing
+a byte changes every URL, which makes that pairing impossible. The
+deploy workflow re-runs it and fails if the committed site differs.
 
-* every asset URL carries `?v=<build id>`, a hash over the assets, so a
-  cached script can never pair with a differently-built page;
-* `boot.js` loads `vfs.js`, `core.js`, `editor.js`, `panes.js` and
-  `app.js` itself rather than trusting the page's `<script>` tags, so
-  any cached HTML still boots.
+Two limits are stated in the product rather than hidden:
 
-`tests/test_web_boot.py` runs the built site in a headless browser (CPython
-standing in for Pyodide) against an index.html stripped back to `boot.js`
-alone, and checks that a missing asset is reported on the page rather than
-leaving it dead.
+* Python runs on the page's only thread. A long loop freezes the tab, so
+  the UI paints "running" and yields a frame before handing over — the
+  pause is the same length either way, but it is legible instead of
+  looking like a hang.
+* Files live in this browser's localStorage. Nothing is synced, and
+  clearing site data removes them.
 
-**Pyodide runs on the page's only thread, and `runPython` is
-synchronous**: while Python works, nothing paints. Two rules follow, and
-both are load-bearing for how the editor feels.
+**Nothing on the typing path may enter Python.** Completion comes from
+the buffer's own words and the language's keywords, computed in
+JavaScript. This is not an optimisation, it is the reason the build
+exists: the previous deploy asked a language service per keystroke and
+measured 527ms on the worst key.
 
-* `boot.js` yields to a macrotask before entering Python, so the
-  keystroke that triggered a call appears *before* the pause rather than
-  after it.
-* Nothing on a per-keystroke path may cross into Python. Completion
-  answers immediately from the buffer and asks the language service only
-  once the typing pauses (`SEMANTIC_DELAY` in `editor.js`). Firing it per
-  keystroke measured 527ms on the worst key; debounced, every keystroke
-  is one frame.
+The editor carries three techniques worth keeping:
 
-Pyodide also takes seconds to produce a first result, so **the IDE is on
-screen and interactive well before any of it arrives**. Anything the IDE draws must
-therefore cope with there being nothing to draw yet - the same test suite
-delays the first capability probe and interacts during that window.
+* a keystroke repaints, a caret move does not — highlighting is cached
+  against the exact source it was built from;
+* only the visible lines are in the document, offset under the textarea
+  that holds and scrolls the whole file;
+* the caret is interpolated in a frame loop, not by a CSS transition. A
+  transition restarts from zero velocity on every keystroke, which is
+  what makes a caret read as steppy. The easing is raised to
+  `dt / 16.667` so it feels the same at 60 or 144 Hz, the loop stops on
+  arrival, and the blink lives on a child element so the two never both
+  write `transform`.
 
-`web/vfs.js` is the browser workspace: the file/folder/rename/duplicate half
-of the API above, against a `{path: content}` map in localStorage, with the
-same status codes for the same requests. `tests/test_web_vfs.py` runs the
-same request sequences through both implementations and compares them.
+### Ligatures
+
+A rendering layer, never an edit. The file still holds `>=`, and every
+keystroke, selection and column number is computed from that text; only
+what the eye is shown changes. A toggle in the header turns the whole
+layer off, and the choice is remembered.
+
+The rule that shapes the whole feature is **width**. The textarea
+underneath owns hit testing and selection, and it lays every character
+on a uniform monospace grid — so a ligature may occupy exactly as many
+cells as the source it stands for. Each one is drawn in a fixed `Nch`
+box, and a browser test measures the painted line against the grid it
+must sit on.
+
+    operators   >=  <=  ==  !=  ->  <-  =>  <->  :=  <<  >>  //  ...
+                → ≥ ≤ ≡ ≠ → ← ⇒ ↔ ≔ ≪ ≫ ⫽ …
+    spaced      a * b   a / b   a - b        → × ÷ −   (one cell in, one out)
+    exponents   x**2  y**-10                 → x²  y⁻¹⁰
+    fractions   3/4  1/2  7/3                → ¾  ½  ⁷⁄₃
+    words       pi tau inf not and or in     → π τ ∞ ¬ ∧ ∨ ∈
+
+Two things are deliberately absent. Long words — `lambda`, `alpha`,
+`sqrt` — would leave four or five empty cells trailing a single glyph,
+and a hole in the middle of a line is worse than the word. And strings
+and comments are never touched: their contents are data, and drawing
+`>=` inside a string as `≥` would misreport what the program holds.
+
+`tests/test_lite_web.py` covers both halves: static checks on the four
+files, then the real site in a headless browser with CPython standing in
+for Pyodide — boot, run, an error that names its line, reload, and a
+typing-latency budget.
+
+## The full workbench (not deployed)
+
+The pane workbench — menu bar, command palette, terminal, debugger,
+source control, dependency graph — is `epsilon/server/static/`, served
+by `epsilon serve`. Its browser shell (the wheel, `bridge.py`, `vfs.js`)
+is preserved under `archive/browser-full/` and still tested; see the
+README there for why the deploy moved off it.
 
 ## CLI - `epsilon/cli.py`
 

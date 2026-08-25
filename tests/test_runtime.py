@@ -150,7 +150,9 @@ def test_console_output_never_corrupts_the_protocol(repl):
 
 
 # --------------------------------------------------------------------------
-# the browser build's implementations (web/bridge.py under CPython)
+# the preserved full-engine browser build (archive/browser-full/bridge.py,
+# run here under CPython). It is off the deployed page but still in the
+# repository, so it stays tested rather than quietly rotting.
 # --------------------------------------------------------------------------
 
 import json
@@ -160,7 +162,8 @@ import sys
 
 @pytest.fixture(scope="module")
 def bridge():
-    web = str(pathlib.Path(__file__).resolve().parent.parent / "web")
+    web = str(pathlib.Path(__file__).resolve().parent.parent
+              / "archive" / "browser-full")
     sys.path.insert(0, web)
     try:
         import bridge as b
