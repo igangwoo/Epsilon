@@ -628,7 +628,12 @@ body.wb-reduced-motion *, body.wb-reduced-motion *::before {
   padding: 0 10px;
   flex: none;
   border-bottom: 1px solid var(--border);
+  /* a narrow window scrolls its tabs rather than hiding them */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.wb-panel-tabs::-webkit-scrollbar { display: none; }
+.wb-panel-tab { flex: none; }
 .wb-panel-tab {
   display: inline-flex;
   align-items: center;
@@ -766,7 +771,10 @@ body.wb-reduced-motion *, body.wb-reduced-motion *::before {
   font-size: 11.5px;
   overflow: hidden;
 }
-.wb-sb-side { display: flex; align-items: stretch; }
+.wb-sb-side { display: flex; align-items: stretch; min-width: 0;
+              overflow-x: auto; scrollbar-width: none; }
+.wb-sb-side::-webkit-scrollbar { display: none; }
+.wb-sb-seg { flex: none; }
 .wb-sb-seg {
   display: inline-flex;
   align-items: center;
@@ -1330,9 +1338,12 @@ body.wb-zen .wb-auxbar { display: none; }
 /* ---------------- responsive ---------------- */
 
 @media (max-width: 860px) {
+  /* the sidebar becomes a drawer over the editor, not a squeeze on it */
   .wb-sidebar { position: absolute; left: var(--activity-w); top: 0;
                 bottom: 0; z-index: 60; box-shadow: var(--shadow);
-                border-right: 1px solid var(--border); }
+                border-right: 1px solid var(--border);
+                background: var(--bg-soft); }
+  .wb-sash-v { display: none; }
   .wb-auxbar { display: none; }
   .wb-run-btn { max-width: 130px; }
 }
