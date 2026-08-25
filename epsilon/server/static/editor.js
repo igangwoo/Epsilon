@@ -384,12 +384,25 @@
     (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 
   function highlight(src, language) {
-    if (language === "markdown") return highlightMarkdown(src);
+    return highlightLines(src, language).join("\n");
+  }
+
+  /**
+   * The same pass, but kept as one entry per source line.
+   *
+   * The editor only ever puts the visible lines in the document, so it
+   * needs them addressable; joining them back up is what `highlight`
+   * does for everyone else. Each entry is self-contained HTML — the
+   * tokeniser closes its spans at every line end — so any slice of this
+   * array is valid markup on its own.
+   */
+  function highlightLines(src, language) {
+    if (language === "markdown") return highlightMarkdown(src).split("\n");
     const spec = SYNTAX[language || "plain"] || SYNTAX.plain;
     const out = [];
     const st = { depth: 0, closer: null };
     src.split("\n").forEach((line) => out.push(highlightLine(line, spec, st)));
-    return out.join("\n");
+    return out;
   }
 
   function highlightLine(line, spec, st) {
@@ -541,10 +554,29 @@
   /* =================================================================
    * CodeEditor component
    * ================================================================= */
+  /* ---- render passes, requested as a bitmask ---- */
+  const TEXT = 1, GUTTER = 2, CURSOR = 4, WINDOW = 8;
+
+  //: lines rendered beyond the viewport, so a small scroll does not
+  //: have to touch the document at all
+  const OVERSCAN = 24;
+
+  //: past this size a full re-tokenise costs more than highlighting is
+  //: worth on every keystroke; the buffer stays editable, plainly drawn
+  const HUGE = 260000;
+  const MAX_OCCURRENCES = 300;
+  const WORD_CHAR = /[A-Za-z0-9_]/;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>]/g,
+      (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+  }
+
   const TEMPLATE = `
     <div class="ed-scroll">
       <div class="ed-gutter" aria-hidden="true"></div>
       <div class="ed-body">
+        <div class="ed-decor" aria-hidden="true"></div>
         <pre class="ed-highlight" aria-hidden="true"><code></code></pre>
         <textarea class="ed-input" spellcheck="false" autocomplete="off"
           autocapitalize="off" wrap="off" aria-label="Code editor"></textarea>
@@ -573,7 +605,29 @@
       this.overwrite = false;
       this._findState = { open: false, query: "", regex: false, case: false,
                           matches: [], index: -1, replaceVisible: false };
-      this._ac = { open: false, items: [], sel: 0, token: 0, from: 0 };
+      this._ac = { open: false, items: [], sel: 0, token: 0, from: 0,
+                   cache: new Map() };
+      // render bookkeeping: what is pending, and what is already painted
+      this._need = 0;
+      this._frame = 0;
+      this._srcCache = null;
+      this._wsCache = null;
+      this._baseHtml = null;
+      this._decKey = null;
+      this._occCache = null;
+      this._gutterLines = 0;
+      this._activeRow = null;
+      this._metrics = null;
+      this._lines = [""];
+      this._lineStarts = [0];
+      this._winFrom = 0;
+      this._winTo = 0;
+      // caret motion: current position, target, and whether to snap
+      this._cx = 0; this._cy = 0;
+      this._ctx = 0; this._cty = 0;
+      this._caretJump = true;
+      this._caretRaf = 0;
+      this._caretPrev = 0;
 
       const el = this.doc.createElement("div");
       el.className = "ed-root";
@@ -585,13 +639,21 @@
       this.body = el.querySelector(".ed-body");
       this.highlightEl = el.querySelector(".ed-highlight code");
       this.pre = el.querySelector(".ed-highlight");
+      this.decorEl = el.querySelector(".ed-decor");
       this.input = el.querySelector(".ed-input");
       this.findEl = el.querySelector(".ed-find");
       this.acEl = el.querySelector(".ed-complete");
 
+      // Two elements on purpose. The wrapper carries the position, written
+      // every frame by the glide loop; the bar owns the blink. Sharing one
+      // element would mean the blink animation and the motion both writing
+      // `transform`, and one would simply erase the other.
       this.caretEl = this.doc.createElement("div");
       this.caretEl.className = "ed-caret hidden";
       this.caretEl.setAttribute("aria-hidden", "true");
+      this.caretBar = this.doc.createElement("i");
+      this.caretBar.className = "ed-caret-bar";
+      this.caretEl.appendChild(this.caretBar);
       this.body.appendChild(this.caretEl);
 
       this.input.value = this.opts.value || "";
@@ -626,6 +688,9 @@
       this.el.dataset.cursorBlink = s("editor.cursorBlinking", "smooth");
       this.el.classList.toggle("ed-no-numbers",
         s("editor.lineNumbers", true) === false);
+      this._metrics = null;                 // the font may have changed
+      this._wsCache = null;                 // and so may whitespace rendering
+      this._caretJump = true;
       this.render();
     }
 
@@ -640,6 +705,7 @@
     /* ---------- value / selection ---------- */
     getValue() { return this.input.value; }
     setValue(v) {
+      this._caretJump = true;      // new document: land, do not sail
       this.input.value = v;
       this.render();
     }
@@ -677,13 +743,37 @@
       this.input.setSelectionRange(at, at);
       const lh = this.lineHeightPx();
       this.input.scrollTop = Math.max(0, (target - 4) * lh);
-      this.render();
+      this._caretJump = true;
+      this.render(WINDOW | CURSOR);
     }
 
-    lineHeightPx() {
-      const style = this.doc.defaultView.getComputedStyle(this.input);
-      return parseFloat(style.lineHeight) || 20;
+    /**
+     * Font metrics, measured once and reused. Reading them back from the
+     * DOM every frame forces a style recalculation, which is exactly the
+     * kind of cost that turns into a stutter while typing. Invalidated
+     * whenever the settings that could change them are applied.
+     */
+    metrics() {
+      if (this._metrics) return this._metrics;
+      const view = this.doc.defaultView || window;
+      const style = view.getComputedStyle(this.input);
+      const declared = parseFloat(style.lineHeight);
+      const size = parseFloat(style.fontSize) || 13;
+      const row = this.gutter && this.gutter.firstElementChild;
+      const measured = row ? row.getBoundingClientRect().height : 0;
+      this._metrics = {
+        // `line-height` reads back as "normal" on some engines, and as the
+        // bare ratio when the element is hidden; a rendered row is the truth
+        lh: measured > size * 0.6 ? measured
+          : (declared > size * 0.6 ? declared : size * 1.6),
+        charW: this._measureChar(style),
+        padLeft: parseFloat(style.paddingLeft) || 0,
+        padTop: parseFloat(style.paddingTop) || 0,
+      };
+      return this._metrics;
     }
+
+    lineHeightPx() { return this.metrics().lh; }
 
     /* ---------- edits that keep native undo ---------- */
     insertText(text) {
@@ -721,7 +811,8 @@
     }
 
     _afterEdit() {
-      this.render();
+      this._markTyping();
+      this.render(TEXT | GUTTER | CURSOR);
       if (this.opts.onChange) this.opts.onChange();
     }
 
@@ -773,22 +864,168 @@
       }
     }
 
-    /* ---------- rendering ---------- */
-    render() {
+    /* ================================================================
+     * Rendering
+     *
+     * Typing must not re-do the whole document. The work splits into
+     * three passes that are requested independently and coalesced into
+     * one animation frame:
+     *
+     *   TEXT    the syntax pass — only when the characters changed
+     *   GUTTER  line numbers — only when the line count changed
+     *   CURSOR  caret, active line, bracket match — every movement
+     *
+     * Moving the caret used to re-tokenise and re-parse the entire
+     * buffer; on a long file that is what the lag was.
+     * ============================================================== */
+    render(flags) {
+      this._need |= flags == null ? (TEXT | GUTTER | CURSOR) : flags;
+      if (this._frame) return;
+      this._frame = (this.doc.defaultView || window).requestAnimationFrame(
+        () => { this._frame = 0; this._paint(); });
+    }
+
+    _paint() {
+      const need = this._need;
+      this._need = 0;
+      if (!need) return;
       const src = this.input.value;
-      let html = highlight(src, this.language);
-      const decorations = this._decorations(src);
-      if (decorations.length) html = decorate(html, decorations, this.doc);
-      const ws = this.setting("editor.renderWhitespace");
-      if (ws === "all" || ws === "boundary") {
-        html = this._whitespace(html, ws);
+
+      if (need & TEXT) this._reflow(src);
+      if (need & (TEXT | GUTTER | WINDOW)) this._paintWindow(need & TEXT);
+      if (need & (TEXT | CURSOR)) this._paintDecorLayer(src, !!(need & TEXT));
+      if (need & CURSOR) {
+        this._paintActiveLine();
+        const c = this.cursor();
+        this.currentLine = c.line;
+        if (this.opts.onCursor) this.opts.onCursor(c);
       }
-      this.highlightEl.innerHTML = html + "\n";
-      this._renderGutter(src);
       this._syncScroll();
-      const c = this.cursor();
-      this.currentLine = c.line;
-      if (this.opts.onCursor) this.opts.onCursor(c);
+    }
+
+    /** Re-tokenise. Cached on the exact source it was built from, so a
+        pass that only moved the caret reuses it. */
+    _reflow(src) {
+      const ws = this.setting("editor.renderWhitespace") || "none";
+      if (src === this._srcCache && ws === this._wsCache) return;
+      let lines = src.length > HUGE
+        ? src.split("\n").map(escapeHtml)
+        : highlightLines(src, this.language);
+      if (ws === "all" || ws === "boundary") {
+        lines = lines.map((l) => this._whitespace(l, ws));
+      }
+      this._lines = lines;
+      // where each line begins, for turning an offset into a position
+      const starts = new Array(lines.length);
+      let at = 0;
+      for (let i = 0; i < lines.length; i++) {
+        starts[i] = at;
+        at = src.indexOf("\n", at) + 1 || src.length;
+      }
+      this._lineStarts = starts;
+      this._srcCache = src;
+      this._wsCache = ws;
+      this._winTo = -1;                       // force the window to redraw
+    }
+
+    /**
+     * Only the visible lines go into the document.
+     *
+     * A thousand-line file put a thousand highlighted lines and a
+     * thousand gutter rows in the tree, and every edit re-parsed all of
+     * them; that is where the typing lag came from. The textarea still
+     * holds and scrolls the whole text — it is the *painted* layers that
+     * are windowed, and they are offset to sit under the real one.
+     *
+     * Soft wrap breaks the arithmetic (a line is no longer one row
+     * high), so that mode renders everything and takes the cost.
+     */
+    _paintWindow(textChanged) {
+      const wrap = this.el.classList.contains("ed-wrap");
+      const m = this.metrics();
+      let from = 0, to = this._lines.length;
+      if (!wrap) {
+        const top = this.input.scrollTop;
+        const h = this.input.clientHeight || 640;
+        from = Math.max(0, Math.floor(top / m.lh) - OVERSCAN);
+        to = Math.min(this._lines.length,
+                      Math.ceil((top + h) / m.lh) + OVERSCAN);
+      }
+      if (!textChanged && from === this._winFrom && to === this._winTo) return;
+      this._winFrom = from;
+      this._winTo = to;
+      this.highlightEl.innerHTML = this._lines.slice(from, to).join("\n") + "\n";
+      this._paintGutterRows(from, to);
+    }
+
+    _paintGutterRows(from, to) {
+      const errors = new Set();
+      const warnings = new Set();
+      this.diagnostics.forEach((d) => {
+        const line = d.span && d.span[0];
+        if (line) (d.severity === "error" ? errors : warnings).add(line);
+      });
+      let out = "";
+      for (let i = from + 1; i <= to; i++) {
+        let cls = "ed-ln";
+        if (errors.has(i)) cls += " err";
+        else if (warnings.has(i)) cls += " warn";
+        if (this.breakpoints.has(i)) cls += " bp";
+        out += `<div class="${cls}" data-line="${i}">` +
+          `<span class="ed-bp-dot"></span>${i}</div>`;
+      }
+      this.gutter.innerHTML = out;
+      this._activeRow = null;
+      this._paintActiveLine();
+    }
+
+    _paintActiveLine() {
+      const line = this.cursor().line;
+      if (this._activeRow && Number(this._activeRow.dataset.line) === line) return;
+      if (this._activeRow) this._activeRow.classList.remove("active");
+      const row = this.gutter.children[line - 1 - this._winFrom] || null;
+      if (row && Number(row.dataset.line) === line) row.classList.add("active");
+      this._activeRow = row;
+    }
+
+    /**
+     * Decorations are drawn, not injected.
+     *
+     * Wrapping ranges in spans meant re-parsing the whole highlighted
+     * document every time the caret moved to a different word. The text
+     * is monospaced and unwrapped, so each range's position is simple
+     * arithmetic: one absolutely-positioned box per range, costing the
+     * number of decorations rather than the size of the file.
+     */
+    _paintDecorLayer(src, forced) {
+      const decs = this._decorations(src);
+      const key = decs.length
+        ? decs.map((d) => d.start + ":" + d.end + ":" + d.cls).join("|") : "";
+      if (!forced && key === this._decKey) return;
+      this._decKey = key;
+      if (this.el.classList.contains("ed-wrap")) {
+        this.decorEl.innerHTML = "";        // geometry does not hold when wrapped
+        return;
+      }
+      const m = this.metrics();
+      const out = [];
+      for (const d of decs) {
+        const a = this.positionOf(d.start);
+        const b = this.positionOf(d.end);
+        for (let ln = a.line; ln <= b.line && ln <= this._lines.length; ln++) {
+          const text = this.lineText(ln);
+          const from = ln === a.line ? a.col : 0;
+          const to = ln === b.line ? b.col : text.length;
+          const x0 = this.visualCol(text, from);
+          const x1 = this.visualCol(text, to);
+          if (x1 <= x0) continue;
+          out.push('<i class="' + d.cls + '" style="transform:translate(' +
+            (x0 * m.charW).toFixed(2) + 'px,' +
+            ((ln - 1 - this._winFrom) * m.lh).toFixed(2) +
+            'px);width:' + ((x1 - x0) * m.charW).toFixed(2) + 'px"></i>');
+        }
+      }
+      this.decorEl.innerHTML = out.join("");
     }
 
     _decorations(src) {
@@ -800,19 +1037,7 @@
           out.push({ start: match[0], end: match[0] + 1, cls: "ed-bracket" });
           out.push({ start: match[1], end: match[1] + 1, cls: "ed-bracket" });
         }
-        const word = EditorOps.wordAt(src, s);
-        if (word && word[1] - word[0] >= 3) {
-          const needle = src.slice(word[0], word[1]);
-          const re = new RegExp("\\b" + needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b", "g");
-          let m, count = 0;
-          while ((m = re.exec(src)) && count < 100) {
-            if (m.index !== word[0]) {
-              out.push({ start: m.index, end: m.index + needle.length,
-                         cls: "ed-occurrence" });
-            }
-            count += 1;
-          }
-        }
+        out.push(...this._occurrences(src, s));
       }
       if (this._findState.open) {
         this._findState.matches.forEach((mm, i) => {
@@ -822,6 +1047,66 @@
         });
       }
       return out;
+    }
+
+    /**
+     * Other occurrences of the word under the caret.
+     *
+     * A whole-document scan, so it is cached against the word itself:
+     * walking along a line with the arrow keys re-uses the answer until
+     * the caret lands on a different identifier. `indexOf` beats a global
+     * regex here — no per-call compile, no match objects.
+     */
+    _occurrences(src, at) {
+      const word = EditorOps.wordAt(src, at);
+      if (!word || word[1] - word[0] < 3 || src.length > HUGE) return [];
+      const needle = src.slice(word[0], word[1]);
+      const cache = this._occCache;
+      if (cache && cache.needle === needle && cache.src === src) {
+        return cache.hits.filter((h) => h.start !== word[0]);
+      }
+      const hits = [];
+      const n = needle.length;
+      for (let i = src.indexOf(needle); i >= 0 && hits.length < MAX_OCCURRENCES;
+           i = src.indexOf(needle, i + n)) {
+        const before = i === 0 ? "" : src[i - 1];
+        const after = i + n >= src.length ? "" : src[i + n];
+        if (!WORD_CHAR.test(before) && !WORD_CHAR.test(after)) {
+          hits.push({ start: i, end: i + n, cls: "ed-occurrence" });
+        }
+      }
+      this._occCache = { needle, src, hits };
+      return hits.filter((h) => h.start !== word[0]);
+    }
+
+    /** 1-based line and 0-based column for an absolute offset. */
+    positionOf(off) {
+      const starts = this._lineStarts;
+      let lo = 0, hi = starts.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (starts[mid] <= off) lo = mid; else hi = mid - 1;
+      }
+      return { line: lo + 1, col: off - starts[lo] };
+    }
+
+    lineText(line) {
+      const src = this.input.value;
+      const start = this._lineStarts[line - 1];
+      if (start == null) return "";
+      const end = this._lineStarts[line] != null
+        ? this._lineStarts[line] - 1 : src.length;
+      return src.slice(start, end);
+    }
+
+    /** Column in character cells, counting a tab to the next tab stop. */
+    visualCol(text, index) {
+      const tab = Number(this.setting("editor.tabSize")) || 4;
+      let cols = 0;
+      for (let i = 0; i < index && i < text.length; i++) {
+        cols += text[i] === "\t" ? tab - (cols % tab) : 1;
+      }
+      return cols;
     }
 
     _whitespace(html, mode) {
@@ -840,44 +1125,43 @@
       }).join("\n");
     }
 
-    _renderGutter(src) {
-      const count = src.split("\n").length;
-      const errors = new Set();
-      const warnings = new Set();
-      this.diagnostics.forEach((d) => {
-        const line = d.span && d.span[0];
-        if (!line) return;
-        (d.severity === "error" ? errors : warnings).add(line);
-      });
-      const current = this.cursor().line;
-      let out = "";
-      for (let i = 1; i <= count; i++) {
-        const classes = ["ed-ln"];
-        if (i === current) classes.push("active");
-        if (errors.has(i)) classes.push("err");
-        else if (warnings.has(i)) classes.push("warn");
-        if (this.breakpoints.has(i)) classes.push("bp");
-        out += `<div class="${classes.join(" ")}" data-line="${i}">` +
-          `<span class="ed-bp-dot"></span>${i}</div>`;
-      }
-      this.gutter.innerHTML = out;
-    }
+    /**
+     * The gutter is rebuilt only when its shape changes — the line count,
+     * a breakpoint, a diagnostic. The active-line highlight moves far more
+     * often than any of those, so it is a class swap on two rows rather
+     * than a reason to re-parse a thousand of them.
+     */
 
     /** The textarea is the one real scroller; the highlight layer and the
         gutter follow it by transform, so all three can never disagree. */
     _syncScroll() {
       const x = -this.input.scrollLeft;
-      const y = -this.input.scrollTop;
+      const wrap = this.el.classList.contains("ed-wrap");
+      // the window starts at line `_winFrom`, so shift it down by that
+      // many lines before taking the scroll offset back off again
+      const y = wrap ? -this.input.scrollTop
+        : this._winFrom * this.metrics().lh - this.input.scrollTop;
       this.pre.style.transform = `translate(${x}px, ${y}px)`;
+      this.decorEl.style.transform = `translate(${x}px, ${y}px)`;
       this.gutter.style.transform = `translate(0, ${y}px)`;
       this._positionCaret();
     }
 
-    /** Drawn caret: a native textarea caret has exactly one look, so the
-        cursor style / blinking settings are honored by hiding it (CSS
-        `caret-color: transparent`) and drawing our own at the measured
-        spot. Soft-wrap mode falls back to the native caret, where logical
-        line arithmetic no longer matches what is on screen. */
+    /**
+     * The drawn caret.
+     *
+     * A textarea's own caret has exactly one look, so the cursor style and
+     * blink settings are honoured by hiding it (`caret-color: transparent`)
+     * and drawing this one at the measured spot. Soft wrap falls back to the
+     * native caret, where logical line arithmetic no longer matches the
+     * screen.
+     *
+     * This only sets the *target*. A CSS transition would be the obvious
+     * way to smooth the movement and the wrong one: a transition restarts
+     * from zero velocity on every keystroke, so fast typing reads as a
+     * series of little jerks. The glide loop below keeps its velocity
+     * across retargets, which is what makes it feel continuous.
+     */
     _positionCaret() {
       const caret = this.caretEl;
       if (!caret) return;
@@ -890,41 +1174,104 @@
         caret.classList.add("hidden");
         return;
       }
-      const style = this.doc.defaultView.getComputedStyle(this.input);
-      const lh = this.lineHeightPx();
-      const charW = this._charWidth ||
-        (this._charWidth = this._measureChar(style));
+      const m = this.metrics();
+      const lh = m.lh;
       const c = this.cursor();
-      const lineStart = this.input.value.lastIndexOf("\n", c.at - 1) + 1;
-      const before = this.input.value.slice(lineStart, c.at);
-      const tabSize = Number(this.setting("editor.tabSize")) || 4;
-      let cols = 0;
-      for (const ch of before) {
-        cols += ch === "\t" ? tabSize - (cols % tabSize) : 1;
-      }
+      const cols = this.visualCol(this.lineText(c.line), c.col - 1);
       const shape = this.el.dataset.cursorStyle || "line";
-      const x = cols * charW - this.input.scrollLeft +
-        (parseFloat(style.paddingLeft) || 0);
-      let y = (c.line - 1) * lh - this.input.scrollTop +
-        (parseFloat(style.paddingTop) || 0);
+
+      const x = cols * m.charW - this.input.scrollLeft + m.padLeft;
+      let y = (c.line - 1) * lh - this.input.scrollTop + m.padTop;
       let h = lh;
-      let w = shape === "line" ? 2 : Math.ceil(charW);
+      const w = shape === "line" ? 2 : Math.ceil(m.charW);
       if (shape === "underline") { y += lh - 2; h = 2; }
+      if (y < -lh || y > (this.input.clientHeight || 0) + lh) {
+        caret.classList.add("hidden");   // scrolled out of sight
+        return;
+      }
       caret.classList.remove("hidden");
-      caret.style.transform = `translate(${x}px, ${y}px)`;
       caret.style.width = w + "px";
       caret.style.height = h + "px";
+
+      // a long jump — a click across the file, a reveal, a page scroll —
+      // should land, not sail across the viewport
+      if (Math.abs(x - this._ctx) + Math.abs(y - this._cty) > lh * 3.5) {
+        this._caretJump = true;
+      }
+      this._ctx = x;
+      this._cty = y;
+      this._glide();
+    }
+
+    /**
+     * Interpolate towards the caret target, then stop.
+     *
+     * The easing constant is raised to (dt / 16.667) so the motion feels
+     * identical at 60, 120 or 144 Hz instead of being tuned for one of
+     * them. The loop cancels itself once it has arrived — a caret that
+     * keeps a frame callback alive while nothing moves is a battery bug.
+     */
+    _glide() {
+      if (this._caretRaf) return;
+      const view = this.doc.defaultView || window;
+      const EASE_X = this._reduceMotion() ? 1 : 0.28;
+      const EASE_Y = this._reduceMotion() ? 1 : 0.34;
+      const step = (now) => {
+        const dt = this._caretPrev ? Math.min(64, now - this._caretPrev) : 16.667;
+        this._caretPrev = now;
+        if (this._caretJump) {
+          this._cx = this._ctx; this._cy = this._cty;
+          this._caretJump = false;
+        } else {
+          const kx = 1 - Math.pow(1 - EASE_X, dt / 16.667);
+          const ky = 1 - Math.pow(1 - EASE_Y, dt / 16.667);
+          this._cx += (this._ctx - this._cx) * kx;
+          this._cy += (this._cty - this._cy) * ky;
+        }
+        this.caretEl.style.transform =
+          `translate3d(${this._cx.toFixed(2)}px,${this._cy.toFixed(2)}px,0)`;
+        if (Math.abs(this._ctx - this._cx) < 0.05 &&
+            Math.abs(this._cty - this._cy) < 0.05) {
+          this._cx = this._ctx; this._cy = this._cty;
+          this.caretEl.style.transform =
+            `translate3d(${this._cx.toFixed(2)}px,${this._cy.toFixed(2)}px,0)`;
+          this._caretRaf = 0;
+          this._caretPrev = 0;
+          return;
+        }
+        this._caretRaf = view.requestAnimationFrame(step);
+      };
+      this._caretPrev = 0;
+      this._caretRaf = view.requestAnimationFrame(step);
+    }
+
+    _reduceMotion() {
+      const view = this.doc.defaultView || window;
+      return (this.doc.body && this.doc.body.classList.contains("wb-reduced-motion"))
+        || !!(view.matchMedia
+              && view.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    }
+
+    /** Solid while typing, blinking once the hands stop — a caret that
+        blinks under the fingers is just noise. */
+    _markTyping() {
+      this.el.classList.add("typing");
+      clearTimeout(this._typingTimer);
+      this._typingTimer = setTimeout(
+        () => this.el.classList.remove("typing"), 620);
     }
 
     setDiagnostics(diags) {
       this.diagnostics = diags || [];
-      this.render();
+      this._winTo = -1;                 // gutter marks changed; redraw them
+      this.render(GUTTER | CURSOR);
     }
 
     toggleBreakpoint(line) {
       if (this.breakpoints.has(line)) this.breakpoints.delete(line);
       else this.breakpoints.add(line);
-      this.render();
+      this._winTo = -1;                 // the gutter dot changed
+      this.render(GUTTER | CURSOR);
       if (this.opts.onBreakpoints) {
         this.opts.onBreakpoints(Array.from(this.breakpoints).sort((a, b) => a - b));
       }
@@ -1076,7 +1423,23 @@
       }
     }
 
-    /* ---------- completion ---------- */
+
+    /* ================================================================
+     * Completion
+     *
+     * The list appears on the first keystroke, not when the network
+     * answers. Two sources feed it:
+     *
+     *   local     identifiers already in the buffer plus the language's
+     *             keywords — computed here, synchronously, so there is
+     *             something accurate to look at immediately;
+     *   semantic  the language service (jedi), which knows real module
+     *             members and signatures but costs a round trip. It
+     *             replaces the local list in place when it lands.
+     *
+     * Waiting for that round trip before drawing anything is what made
+     * completion feel slow; the answer was rarely slow, the wait was.
+     * ============================================================== */
     async openCompletion(explicit) {
       if (!this.opts.completions) return;
       const c = this.cursor();
@@ -1084,11 +1447,24 @@
       const word = EditorOps.wordAt(text, c.at);
       const prefixStart = word && word[0] < c.at ? word[0] : c.at;
       const prefix = text.slice(prefixStart, c.at);
-      if (!explicit && prefix.length < 1 && text[c.at - 1] !== "." &&
-          !(this.language === "cpp" && text.slice(c.at - 2, c.at) === "::")) {
+      const dotted = text[c.at - 1] === "." ||
+        (this.language === "cpp" && text.slice(c.at - 2, c.at) === "::");
+      if (!explicit && prefix.length < 1 && !dotted) {
         return this.closeCompletion();
       }
       const token = ++this._ac.token;
+      this._ac.from = prefixStart;
+
+      // 1. whatever can be answered without leaving the page
+      const from = lineStart(text, c.at);
+      const cacheKey = this.language + "\u0000" + text.slice(from, c.at);
+      const cached = this._ac.cache.get(cacheKey);
+      const local = cached || (dotted ? [] : this._localCompletions(text, prefix));
+      if (local.length) this._showCompletion(local);
+      else if (!dotted && !explicit) this.closeCompletion();
+      if (cached) return;                    // already the semantic answer
+
+      // 2. and the answer that needed a round trip
       let items;
       try {
         items = await this.opts.completions({
@@ -1096,15 +1472,64 @@
           line: c.line, col: c.col - 1, path: this.path, prefix,
         });
       } catch (e) { return; }
-      if (token !== this._ac.token) return;
+      if (token !== this._ac.token) return;  // the caret moved on
       items = (items || []).filter((i) =>
         !prefix || i.name.toLowerCase().startsWith(prefix.toLowerCase()));
-      if (!items.length) return this.closeCompletion();
+      if (items.length) {
+        if (this._ac.cache.size > 60) this._ac.cache.clear();
+        this._ac.cache.set(cacheKey, items);
+        this._showCompletion(items);
+      } else if (!local.length) {
+        this.closeCompletion();
+      }
+    }
+
+    /** Swap the list without losing the reader's place in it. */
+    _showCompletion(items) {
+      const keep = this._ac.open && this._ac.items[this._ac.sel];
       this._ac.items = items.slice(0, 60);
-      this._ac.sel = 0;
-      this._ac.from = prefixStart;
+      const again = keep
+        ? this._ac.items.findIndex((i) => i.name === keep.name) : -1;
+      this._ac.sel = again > 0 ? again : 0;
       this._ac.open = true;
       this._renderCompletion();
+    }
+
+    /**
+     * Identifiers already written in this buffer, plus the language's own
+     * words. Indexed lazily and reused until the text actually changes —
+     * a full scan per keystroke would cost more than it returns.
+     */
+    _localCompletions(text, prefix) {
+      if (!prefix) return [];
+      if (!this._identIndex || this._identIndex.src !== text) {
+        const seen = new Map();
+        const re = /[A-Za-z_][A-Za-z0-9_]{1,}/g;
+        const scan = text.length > HUGE ? text.slice(0, HUGE) : text;
+        let m;
+        while ((m = re.exec(scan))) seen.set(m[0], (seen.get(m[0]) || 0) + 1);
+        const syn = SYNTAX[this.language] || {};
+        const words = new Set([...(syn.keywords || []),
+                               ...(syn.secondary || [])]);
+        this._identIndex = { src: text, seen, words };
+      }
+      const { seen, words } = this._identIndex;
+      const lower = prefix.toLowerCase();
+      const out = [];
+      words.forEach((w) => {
+        if (w.length > prefix.length && w.toLowerCase().startsWith(lower)) {
+          out.push({ name: w, kind: "keyword", detail: "keyword", insert: w });
+        }
+      });
+      seen.forEach((count, w) => {
+        if (w !== prefix && w.toLowerCase().startsWith(lower) && !words.has(w)) {
+          out.push({ name: w, kind: "text", detail: "in this file",
+                     insert: w, _n: count });
+        }
+      });
+      out.sort((a, b) => (b._n || 0) - (a._n || 0) ||
+                         a.name.length - b.name.length);
+      return out.slice(0, 40);
     }
 
     closeCompletion() {
@@ -1138,10 +1563,9 @@
     _positionCompletion() {
       // mirror measurement: caret x/y inside the scroller
       const c = this.cursor();
-      const lh = this.lineHeightPx();
-      const style = this.doc.defaultView.getComputedStyle(this.input);
-      const charW = this._charWidth ||
-        (this._charWidth = this._measureChar(style));
+      const m = this.metrics();
+      const lh = m.lh;
+      const charW = m.charW;
       const x = (c.col - 1) * charW - this.input.scrollLeft +
         this.gutter.offsetWidth;
       const y = c.line * lh - this.input.scrollTop;
@@ -1190,15 +1614,16 @@
 
       input.addEventListener("input", () => {
         this._afterEdit();
-        clearTimeout(this._acTimer);
-        this._acTimer = setTimeout(() => this.openCompletion(false), 140);
+        this.openCompletion(false);
       });
       input.addEventListener("scroll", () => {
-        this._syncScroll();
+        this._caretJump = true;    // the caret rides the viewport, not the text
+        this.render(WINDOW | CURSOR);
         if (this._ac.open) this._positionCompletion();
       });
-      ["click", "keyup"].forEach((ev) =>
-        input.addEventListener(ev, () => this.render()));
+      //: moving the caret is not a text change — repaint the cheap passes
+      ["click", "keyup", "select"].forEach((ev) =>
+        input.addEventListener(ev, () => this.render(CURSOR)));
       input.addEventListener("blur", () => {
         this.closeCompletion();
         this._positionCaret();
@@ -1356,11 +1781,24 @@
     }
 
     destroy() {
+      // a frame still queued would paint into a detached tree
+      if (this._frame) {
+        (this.doc.defaultView || window).cancelAnimationFrame(this._frame);
+        this._frame = 0;
+      }
+      if (this._caretRaf) {
+        (this.doc.defaultView || window).cancelAnimationFrame(this._caretRaf);
+        this._caretRaf = 0;
+      }
+      clearTimeout(this._acTimer);
+      clearTimeout(this._typingTimer);
+      this._ac.token++;                  // orphan any in-flight completion
       this.el.remove();
     }
   }
 
-  const api = { CodeEditor, EditorOps, highlight, decorate, langOf, LANGS };
+  const api = { CodeEditor, EditorOps, highlight, highlightLines,
+                decorate, langOf, LANGS };
   root.EpsilonEditor = api;
   if (typeof module === "object" && module.exports) module.exports = api;
 })(typeof globalThis !== "undefined" ? globalThis : this);

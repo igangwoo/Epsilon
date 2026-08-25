@@ -382,6 +382,7 @@ def ide_capabilities():
         "completions": {"python": "semantic" if HAS_JEDI else "lexical",
                         "cpp": "lexical"},
         "definitions": {"python": HAS_JEDI, "cpp": False},
+        "graph": {"python": "semantic", "cpp": "lexical"},
         "git": False,
     })
 
@@ -390,6 +391,11 @@ def complete(language, code, line, col, path=""):
     from epsilon.runtime.completion import complete as _complete
     return json.dumps(_complete(language, code, int(line), int(col),
                                 path or ""))
+
+
+def symbol_graph(language, code, path=""):
+    from epsilon.runtime.depgraph import graph
+    return json.dumps(graph(language, code, path or ""))
 
 
 def find_definition(language, code, line, col, path=""):

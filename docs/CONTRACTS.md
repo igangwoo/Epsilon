@@ -266,14 +266,24 @@ GET  /api/capabilities -> {"run": {python, cpp}, "terminal": bool,
                                            cpp: "lexical"},
                            "definitions": {python: bool, cpp: false},
                            "git": bool}
-   (the truth about THIS machine; the UI disables what is absent and says
-    why. The browser build's bridge returns its own, smaller truth.)
+      (the truth about THIS machine; the UI disables what is absent and says
+    why. The browser build's bridge returns its own, smaller truth.
+    `graph` reports the analysis level available per language.)
 
 POST /api/complete {language, code, line, col, path?}
    -> {"level": "semantic"|"lexical", "items": [{name, kind, detail, insert}]}
    (line is 1-based, col 0-based - jedi's convention. Python is semantic
     when jedi is installed; C++ is lexical: keywords, curated std::, buffer
     identifiers. The reply's `level` says which produced it.)
+POST /api/graph {language, code, path?}
+   -> {"ok", "level": "semantic"|"lexical",
+       "nodes": [{id, name, kind, line, detail, refs}],
+       "edges": [{from, to, kind}], "note"?, "message"?}
+   (what refers to what inside one file. Python is read with `ast`, so a
+    name used inside a function is attributed to that function and
+    resolved against the module's own definitions; C++ is a lexical pass
+    and says so. kind: module|class|function|variable|import. A syntax
+    error comes back ok=false with the line, never as an empty picture.)
 POST /api/definition {language, code, line, col, path?}
    -> {"found": bool, "path"?, "line"?, "col"?, "message"?}
    (Python via jedi goto. A definition in an installed module is named,
@@ -327,8 +337,32 @@ defaults and persist; settings are typed, validated, persisted, observable.
 textarea for input/IME/undo/a11y with a highlight layer behind it, the
 textarea being the one real scroller (gutter and highlight follow by
 transform). Pure editing operations live in `EpsilonEditor.EditorOps` and
-are node-tested. The caret is drawn, so cursor style/blink settings work;
-soft-wrap falls back to the native caret.
+are node-tested.
+
+Three things keep it fast on a long file, and each is load-bearing:
+
+* **Passes, not repaints.** `render(flags)` requests TEXT / GUTTER /
+  CURSOR / WINDOW and coalesces them into one animation frame. Moving
+  the caret does not re-tokenise anything.
+* **Only the visible lines are in the document.** The textarea holds and
+  scrolls the whole text; the painted layers render a window around the
+  viewport and are offset to sit under it. Soft wrap breaks that
+  arithmetic, so that mode renders everything and takes the cost.
+* **Decorations are drawn, not injected.** Occurrence, bracket and find
+  ranges are positioned boxes in `.ed-decor`, costing the number of
+  ranges rather than a re-parse of the file.
+
+The caret is drawn too, so the cursor style and blink settings mean
+something. It is moved by a `requestAnimationFrame` lerp rather than a
+CSS transition: a transition restarts from zero velocity on every
+keystroke, which is what makes a caret read as steppy while typing. The
+easing constant is raised to `dt / 16.667` so it feels the same at 60 or
+144 Hz, the loop stops once it arrives, and the blink lives on a child
+element so the two never both write `transform`.
+
+`graph.js` renders the dependency graph — a small deterministic force
+layout and plain SVG. It knows nothing about the workbench: give it a
+container, `{nodes, edges}` and an `onSelect`, and it returns a handle.
 
 `panes.js` owns the editor groups - a binary split tree of tabbed panes.
 Views are *existing* DOM elements, re-parented rather than re-created;

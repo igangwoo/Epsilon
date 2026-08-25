@@ -560,6 +560,7 @@ def create_app() -> FastAPI:
             "completions": {"python": "semantic" if HAS_JEDI else "lexical",
                             "cpp": "lexical"},
             "definitions": {"python": HAS_JEDI, "cpp": False},
+            "graph": {"python": "semantic", "cpp": "lexical"},
             "git": gitwork.available(),
         }
 
@@ -567,6 +568,11 @@ def create_app() -> FastAPI:
     def complete_code(req: CompleteRequest) -> dict:
         from ..runtime.completion import complete
         return complete(req.language, req.code, req.line, req.col, req.path)
+
+    @app.post("/api/graph")
+    def symbol_graph(req: CompleteRequest) -> dict:
+        from ..runtime.depgraph import graph
+        return graph(req.language, req.code, req.path)
 
     @app.post("/api/definition")
     def find_definition(req: CompleteRequest) -> dict:

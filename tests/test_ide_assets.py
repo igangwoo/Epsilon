@@ -19,6 +19,7 @@ APP = STATIC / "app.js"
 PANES = STATIC / "panes.js"
 CORE = STATIC / "core.js"
 EDITOR = STATIC / "editor.js"
+GRAPH = STATIC / "graph.js"
 
 
 def html_ids():
@@ -121,7 +122,7 @@ def test_panel_tabs_exist_in_the_html():
 
 def test_no_external_resources():
     """The IDE is self-contained — no CDNs, no phone-home."""
-    for f in (HTML, APP, STATIC / "app.css", PANES, CORE, EDITOR):
+    for f in (HTML, APP, STATIC / "app.css", PANES, CORE, EDITOR, GRAPH):
         text = f.read_text()
         for m in re.findall(r'(?:src|href)="(https?://[^"]+)"', text):
             assert m.startswith("https://github.com/"), \
@@ -129,7 +130,8 @@ def test_no_external_resources():
 
 
 @pytest.mark.parametrize("name", ["panes.js", "app.js", "app.css",
-                                  "index.html", "core.js", "editor.js"])
+                                  "index.html", "core.js", "editor.js",
+                                  "graph.js"])
 def test_asset_present(name):
     assert (STATIC / name).exists()
 
@@ -220,3 +222,86 @@ def test_disabled_commands_carry_reasons():
     bodies = re.findall(r"whyDisabled: (?:\(\) =>|[a-zA-Z]+)([^}]*)",
                         block.group(1))
     assert len(bodies) >= 15, "the registry lost its whyDisabled coverage"
+
+def strip_comments(js):
+    """Comments discuss what the code avoids; only the code is evidence."""
+    js = re.sub(r"/\*.*?\*/", "", js, flags=re.S)
+    return re.sub(r"^\s*//.*$|(?<=\s)//[^\n]*", "", js, flags=re.M)
+
+
+def test_the_graph_layout_is_deterministic():
+    """The same file must draw the same picture every time it is opened;
+    a layout seeded by chance makes the view useless as a reference."""
+    graph = strip_comments(GRAPH.read_text())
+    assert "Math.random" not in graph, (
+        "the graph layout must not be seeded randomly")
+    assert "Date.now" not in graph
+
+
+def test_motion_waits_for_the_first_layout():
+    """A workbench that animates itself into place on load reads as slow."""
+    css = (STATIC / "app.css").read_text()
+    assert ".wb-ready" in css
+    assert "wb-ready" in APP.read_text()
+
+
+def test_the_editor_does_not_repaint_the_whole_file_to_move_the_caret():
+    """Re-tokenising and re-parsing the document on every cursor move is
+    what the typing lag was; the passes must stay separable."""
+    editor = EDITOR.read_text()
+    assert "const TEXT = 1" in editor and "CURSOR = 4" in editor
+    assert "render(CURSOR)" in editor, (
+        "caret movement must request the cursor pass, not a full repaint")
+    assert "requestAnimationFrame" in editor, "paints must be coalesced"
+
+
+def test_panels_do_not_re_blur_the_backdrop():
+    """backdrop-filter on the full-size panels made the browser re-blur
+    five regions on every repaint — ten times the cost of typing."""
+    css = (STATIC / "app.css").read_text()
+    block = re.search(r"\.wb-activitybar, \.wb-sidebar.*?\n\}", css, re.S)
+    assert block, "the shared panel rule was not found"
+    assert "backdrop-filter" not in block.group(0)
+
+def editor_methods():
+    return set(re.findall(r"^    (?:async )?([A-Za-z_]\w*)\(",
+                          EDITOR.read_text(), re.M))
+
+
+def test_every_editor_method_the_workbench_calls_exists():
+    """`entry.editor.setDiagnostics(...)` for a method that is not there
+    throws only when that path runs — often long after the edit that
+    removed it. Check the whole surface statically."""
+    app = APP.read_text()
+    called = set(re.findall(r"\.editor\.([A-Za-z_]\w*)\(", app))
+    called |= set(re.findall(r"\bed\.([A-Za-z_]\w*)\(", app))
+    known = editor_methods() | {"constructor"}
+    missing = sorted(called - known)
+    assert not missing, f"app.js calls editor methods that do not exist: {missing}"
+
+
+def test_the_caret_is_not_animated_by_a_css_transition():
+    """A transition restarts from zero velocity on every keystroke, which
+    is what makes a caret read as steppy while typing. The glide loop in
+    editor.js keeps its velocity across retargets instead."""
+    css = (STATIC / "app.css").read_text()
+    block = re.search(r"\.ed-caret \{(.*?)\}", css, re.S)
+    assert block, ".ed-caret rule not found"
+    assert "transition" not in block.group(1)
+    editor = EDITOR.read_text()
+    assert "_glide()" in editor
+    # frame-rate independence: the easing is raised to dt/16.667
+    assert "Math.pow(1 - EASE_X" in editor
+    # and it must stop once it has arrived
+    assert "this._caretRaf = 0;" in editor
+
+
+def test_the_caret_blink_cannot_fight_its_own_motion():
+    """Position is written to the wrapper every frame; the blink lives on
+    the bar inside it. One element would mean both writing `transform`."""
+    css = (STATIC / "app.css").read_text()
+    assert ".ed-caret-bar" in css
+    for blink in ("caret-hard", "caret-soft", "caret-grow"):
+        assert f".ed-caret-bar {{ animation: {blink}" in css or \
+               f'.ed-caret-bar {{ animation: {blink}' in css, blink
+

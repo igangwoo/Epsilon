@@ -508,9 +508,9 @@
     item.tabIndex = 0;
     item.setAttribute("role", "treeitem");
     if (node.kind === "folder") {
+      if (!collapsed.has(node.path)) item.classList.add("open");
       const twisty = el("span", "wb-twisty");
-      twisty.appendChild(icon(
-        collapsed.has(node.path) ? "chevronRight" : "chevronDown", 13));
+      twisty.appendChild(icon("chevronRight", 13));
       item.appendChild(twisty);
       const fico = el("span", "wb-glyph folder");
       fico.appendChild(icon("folder", 15));
@@ -687,8 +687,8 @@
 
   function renderPanel() {
     const host = $("#panel");
-    host.classList.toggle("hidden", !panel.open);
-    $("#panelSash").classList.toggle("hidden", !panel.open);
+    host.classList.toggle("collapsed", !panel.open);
+    $("#panelSash").classList.toggle("collapsed", !panel.open);
     if (!panel.open) return;
     const tabs = $("#panelTabs");
     tabs.innerHTML = "";
@@ -1872,6 +1872,106 @@
   }
 
   /* =================================================================
+   * Dependency graph
+   *
+   * What refers to what inside the active file. It opens as an editor
+   * tab rather than a side panel because a graph needs room, and it
+   * reads the buffer on demand rather than on every keystroke — laying
+   * out a graph while someone is typing is work nobody asked for.
+   * ================================================================= */
+  const graphState = {
+    kinds: new Set(readJSON("epsilon.graph.kinds.v1",
+      ["module", "class", "function", "variable", "import"])),
+    handle: null,
+  };
+
+  function graphDisabledReason() {
+    if (!state.active || SPECIAL.has(state.active)) return "no file is active";
+    const lang = currentLanguage();
+    if (lang === "python" || lang === "cpp") return null;
+    return "dependency analysis reads Python with its own parser and C++ " +
+      "lexically; " + (LANGUAGE_LABEL[lang] || lang) + " has neither yet";
+  }
+
+  function openGraph(forPath) {
+    const path = forPath || state.active;
+    const entry = editors.get(path);
+    if (!entry) return;
+    openSpecial("epsilon://graph", "Dependencies", (host) => {
+      host.className = "wb-special wb-graph";
+      const bar = el("div", "wb-graph-bar");
+      const title = el("div", "wb-graph-title");
+      title.appendChild(el("span", "wb-graph-file", tabTitle(path)));
+      const level = el("span", "wb-graph-level");
+      title.appendChild(level);
+      bar.appendChild(title);
+
+      EpsilonGraph.KIND_ORDER.forEach((kind) => {
+        const on = graphState.kinds.has(kind);
+        const chip = el("button",
+          "wb-chip wb-graph-kind kind-" + kind + (on ? " active" : ""),
+          EpsilonGraph.KIND_LABEL[kind]);
+        chip.setAttribute("aria-pressed", String(on));
+        chip.onclick = () => {
+          if (on) graphState.kinds.delete(kind);
+          else graphState.kinds.add(kind);
+          writeJSON("epsilon.graph.kinds.v1", Array.from(graphState.kinds));
+          openGraph(path);
+        };
+        bar.appendChild(chip);
+      });
+      bar.appendChild(iconButton("refresh", "Rebuild from the current buffer",
+                                 () => openGraph(path), "wb-icon-btn", 15));
+      host.appendChild(bar);
+
+      const canvas = el("div", "wb-graph-canvas");
+      const legend = el("div", "wb-graph-legend");
+      host.appendChild(canvas);
+      host.appendChild(legend);
+      canvas.appendChild(el("div", "wb-empty", "Reading the file…"));
+
+      api("POST", "/api/graph", {
+        language: languageOf(path), code: entry.editor.getValue(),
+        line: 1, col: 0, path,
+      }).then((data) => {
+        if (!data) return;
+        level.className = "wb-graph-level " + (data.level || "");
+        level.textContent = data.level === "lexical"
+          ? "lexical — without a compiler front-end, overloads and scope "
+            + "are not resolved"
+          : data.level === "semantic"
+            ? "read with the language's own parser" : "";
+        canvas.innerHTML = "";
+        if (data.ok === false) {
+          canvas.appendChild(el("div", "wb-empty",
+            data.message || "This file could not be analysed."));
+          return;
+        }
+        graphState.handle = EpsilonGraph.render(canvas, data, {
+          filter: graphState.kinds,
+          onSelect: (node) => openFile(path).then(() => {
+            const target = editors.get(path);
+            if (target) target.editor.revealLine(node.line, 1);
+          }),
+        });
+        legend.innerHTML = "";
+        const counts = (graphState.handle && graphState.handle.counts) || {};
+        EpsilonGraph.KIND_ORDER.forEach((kind) => {
+          if (!counts[kind]) return;
+          const item = el("span", "wb-graph-legend-item kind-" + kind);
+          item.appendChild(el("i", "wb-graph-swatch"));
+          item.appendChild(el("span", "", counts[kind] + " " +
+            EpsilonGraph.KIND_LABEL[kind] + (counts[kind] === 1 ? "" : "s")));
+          legend.appendChild(item);
+        });
+        const edges = (data.edges || []).length;
+        legend.appendChild(el("span", "wb-graph-legend-item dim",
+          edges + " reference" + (edges === 1 ? "" : "s")));
+      });
+    }, { refresh: true });
+  }
+
+  /* =================================================================
    * Commands — the single registry every surface reads
    * ================================================================= */
   function editorCmd(id, title, action, chord, category) {
@@ -2132,6 +2232,10 @@
     C({ id: "go.line", title: "Go to Line…", category: "Go",
         run: () => openPalette("file", ":"), whyDisabled: needsEditor });
     K("go.line", "Mod+G");
+    C({ id: "view.graph", title: "Show Dependency Graph", category: "Go",
+        run: () => openGraph(), whyDisabled: graphDisabledReason,
+        description: "Which symbols in this file refer to which" });
+    K("view.graph", "Mod+Shift+D");
     C({ id: "go.definition", title: "Go to Definition", category: "Go",
         run: goToDefinition, whyDisabled: () =>
           currentLanguage() === "python" ? null
@@ -2259,7 +2363,8 @@
         id === null ? { separator: true } : { command: id }));
 
     M.addMenu("go", "Go", 5);
-    ["go.back", "go.forward", null, "go.file", "go.symbol", "go.line", null,
+    ["go.back", "go.forward", null, "go.file", "go.symbol", "go.line",
+     "view.graph", null,
      "go.definition"].forEach((id) => M.addItem("go",
       id === null ? { separator: true } : { command: id }));
 
@@ -2454,6 +2559,7 @@
     ContextMenus.register("editor", () => [
       { command: "go.definition" },
       { command: "go.symbol" },
+      { command: "view.graph" },
       { separator: true },
       { command: "edit.cut" }, { command: "edit.copy" },
       { command: "edit.paste" },
@@ -2761,8 +2867,8 @@
     writeJSON("epsilon.sidebar.open.v1", true);
     writeJSON("epsilon.sidebar.view.v1", sidebar.view);
     const side = $("#sidebar");
-    side.classList.remove("hidden");
-    $("#sideSash").classList.remove("hidden");
+    side.classList.remove("collapsed");
+    $("#sideSash").classList.remove("collapsed");
     const spec = sidebar.views.find((v) => v.id === sidebar.view);
     $("#sidebarTitle").textContent = spec ? spec.title.toUpperCase() : "";
     $$(".wb-side-view").forEach((v) =>
@@ -2778,8 +2884,8 @@
     if (sidebar.open) {
       sidebar.open = false;
       writeJSON("epsilon.sidebar.open.v1", false);
-      $("#sidebar").classList.add("hidden");
-      $("#sideSash").classList.add("hidden");
+      $("#sidebar").classList.add("collapsed");
+      $("#sideSash").classList.add("collapsed");
       renderActivity();
     } else {
       showSidebar();
@@ -2792,7 +2898,7 @@
   function toggleAux() {
     aux.open = !aux.open;
     writeJSON("epsilon.aux.open.v1", aux.open);
-    $("#auxbar").classList.toggle("hidden", !aux.open);
+    $("#auxbar").classList.toggle("collapsed", !aux.open);
     if (aux.open) renderOutline();
   }
 
@@ -3171,9 +3277,12 @@
 
     await loadFiles();
     if (sidebar.open) showSidebar(sidebar.view);
-    else { $("#sidebar").classList.add("hidden");
-           $("#sideSash").classList.add("hidden"); }
-    if (aux.open) { $("#auxbar").classList.remove("hidden"); }
+    else { $("#sidebar").classList.add("collapsed");
+           $("#sideSash").classList.add("collapsed"); }
+    // only now may the shell animate — a layout that animates itself
+    // into place on load reads as slow, not as polished
+    requestAnimationFrame(() => document.body.classList.add("wb-ready"));
+    if (aux.open) $("#auxbar").classList.remove("collapsed");
 
     await restoreWorkspace();
     if (state.caps && state.caps.git) refreshGit();

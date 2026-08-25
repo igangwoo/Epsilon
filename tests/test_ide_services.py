@@ -260,3 +260,65 @@ def test_git_mutations_are_same_origin_only(client):
         r = client.post(path, json={"message": "x"},
                         headers={"Origin": "https://evil.example"})
         assert r.status_code == 403, path
+
+# --------------------------------------------------------------------------
+# dependency graph
+# --------------------------------------------------------------------------
+
+def test_python_graph_links_a_function_to_what_it_uses(client):
+    code = ("import math\n\n\nSCALE = 2\n\n\n"
+            "def area(r):\n    return math.pi * r * r * SCALE\n\n\n"
+            "print(area(1))\n")
+    r = client.post("/api/graph", json={
+        "language": "python", "code": code, "line": 1, "col": 0}).json()
+    assert r["ok"] and r["level"] == "semantic"
+    kinds = {n["name"]: n["kind"] for n in r["nodes"]}
+    assert kinds["area"] == "function"
+    assert kinds["SCALE"] == "variable"
+    assert kinds["math"] == "import"
+    edges = {(e["from"], e["to"]) for e in r["edges"]}
+    assert ("area", "math") in edges
+    assert ("area", "SCALE") in edges
+    # the module body uses the function, which is what "who calls this" means
+    assert ("<module>", "area") in edges
+
+
+def test_graph_counts_incoming_references(client):
+    code = "def a():\n    pass\n\n\ndef b():\n    a()\n\n\ndef c():\n    a()\n"
+    r = client.post("/api/graph", json={
+        "language": "python", "code": code, "line": 1, "col": 0}).json()
+    refs = {n["name"]: n["refs"] for n in r["nodes"]}
+    assert refs["a"] == 2 and refs["b"] == 0
+
+
+def test_graph_reports_a_syntax_error_rather_than_an_empty_picture(client):
+    r = client.post("/api/graph", json={
+        "language": "python", "code": "def broken(\n", "line": 1,
+        "col": 0}).json()
+    assert r["ok"] is False and "line" in r["message"]
+
+
+def test_cpp_graph_is_lexical_and_says_so(client):
+    code = ("int add(int a){ return a; }\n"
+            "int twice(int x){ return add(x) + add(x); }\n"
+            "int main(){ return twice(2); }\n")
+    r = client.post("/api/graph", json={
+        "language": "cpp", "code": code, "line": 1, "col": 0}).json()
+    assert r["level"] == "lexical"
+    assert "no compiler front-end" in r["note"]
+    edges = {(e["from"], e["to"]) for e in r["edges"]}
+    assert ("twice", "add") in edges and ("main", "twice") in edges
+    # a body ends where the next signature starts, not where it ends
+    assert ("add", "twice") not in edges
+
+
+def test_graph_refuses_a_language_it_cannot_read(client):
+    r = client.post("/api/graph", json={
+        "language": "markdown", "code": "# hi", "line": 1, "col": 0}).json()
+    assert r["ok"] is False
+    assert "Python" in r["message"] and r["nodes"] == []
+
+
+def test_capabilities_state_the_graph_level_per_language(client):
+    caps = client.get("/api/capabilities").json()
+    assert caps["graph"] == {"python": "semantic", "cpp": "lexical"}

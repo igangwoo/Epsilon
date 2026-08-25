@@ -236,7 +236,7 @@ def test_it_boots_with_a_cached_index_from_an_earlier_build(tmp_path):
     """
     html = (WEB / "index.html").read_text()
     html = re.sub(
-        r'[ \t]*<script src="(vfs|panes|core|editor)\.js[^"]*"></script>\n',
+        r'[ \t]*<script src="(vfs|panes|core|editor|graph)\.js[^"]*"></script>\n',
         "", html)
     html = re.sub(r"\?v=[0-9a-f]+", "", html)
     tags = re.findall(r'<script src="([^"]+)"', html)
@@ -409,4 +409,39 @@ def test_the_menu_bar_is_usable_without_a_mouse(tmp_path):
     assert out["open"], "arrow keys did not open a menu"
     assert "wb-menu-item" in out["focusedItem"], (
         f"focus never entered the dropdown: {out}")
+
+def test_the_dependency_graph_draws_what_the_file_refers_to(tmp_path):
+    """A picture of the symbols and their references, built from the live
+    buffer rather than from what was last saved."""
+    script = READY + """
+  await pg.evaluate(`(() => {
+    const ed = document.querySelector('.ed-input');
+    ed.value = ['import math', '', '', 'SCALE = 3', '', '',
+                'def area(r):', '    return math.pi * r * r * SCALE', '', '',
+                'print(area(2))'].join(String.fromCharCode(10));
+    ed.dispatchEvent(new Event('input', { bubbles: true }));
+  })()`);
+  await pg.waitForTimeout(400);
+  await pg.evaluate("EpsilonIDE.commands.execute('view.graph')");
+  await pg.waitForFunction("document.querySelectorAll('.gr-node').length > 2",
+                           null, { timeout: 20000 });
+"""
+    probe = """({
+      nodes: [...document.querySelectorAll('.gr-node .gr-label')].map(t => t.textContent),
+      edges: document.querySelectorAll('.gr-edge').length,
+      level: (document.querySelector('.wb-graph-level') || {}).textContent || '',
+      legend: (document.querySelector('.wb-graph-legend') || {}).textContent || '',
+    })"""
+    global PROBE
+    saved, PROBE = PROBE, probe
+    try:
+        out = boot_site(tmp_path, script=script, wait=800)
+    finally:
+        PROBE = saved
+    assert "area" in out["nodes"], out["nodes"]
+    assert "SCALE" in out["nodes"], out["nodes"]
+    assert "math" in out["nodes"], out["nodes"]
+    assert out["edges"] >= 3, out
+    assert "parser" in out["level"], out["level"]
+    assert "reference" in out["legend"], out["legend"]
 

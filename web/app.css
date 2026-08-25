@@ -56,7 +56,7 @@
 /* ---- Dusk (default) ---------------------------------------------- */
 :root, :root[data-theme="dark"] {
   --ground: #08080d;                        /* behind everything      */
-  --surface: rgba(23, 23, 32, 0.66);        /* frosted panels         */
+  --surface: rgba(20, 20, 28, 0.82);        /* translucent panels     */
   --surface-solid: #16161f;                 /* where text must be read */
   --surface-2: rgba(255, 255, 255, 0.038);  /* raised inside a panel  */
   --surface-3: rgba(255, 255, 255, 0.07);   /* hover                  */
@@ -111,7 +111,7 @@
 /* ---- Paper -------------------------------------------------------- */
 :root[data-theme="light"] {
   --ground: #eef0f8;
-  --surface: rgba(255, 255, 255, 0.72);
+  --surface: rgba(255, 255, 255, 0.8);
   --surface-solid: #ffffff;
   --surface-2: rgba(28, 24, 60, 0.035);
   --surface-3: rgba(28, 24, 60, 0.062);
@@ -243,19 +243,23 @@ html, body {
   pointer-events: none;
   overflow: hidden;
   opacity: var(--aurora-opacity);
-  filter: blur(var(--aurora-blur));
+  contain: strict;
 }
+/* A soft-edged gradient, not a circle behind a blur filter. It looks
+   the same and costs nothing to rasterise, which matters because this
+   sits underneath every translucent panel in the workbench. */
 .wb-aurora span {
   position: absolute;
   border-radius: 50%;
   will-change: transform;
+  transform: translateZ(0);
 }
 .wb-aurora-a {
   width: 46vw;
   height: 46vw;
   left: -6vw;
   top: -12vw;
-  background: var(--aurora-1);
+  background: radial-gradient(circle closest-side, var(--aurora-1), transparent 72%);
   animation: drift-a 34s ease-in-out infinite alternate;
 }
 .wb-aurora-b {
@@ -263,7 +267,7 @@ html, body {
   height: 42vw;
   right: -8vw;
   bottom: -14vw;
-  background: var(--aurora-2);
+  background: radial-gradient(circle closest-side, var(--aurora-2), transparent 72%);
   animation: drift-b 41s ease-in-out infinite alternate;
 }
 .wb-aurora-c {
@@ -271,7 +275,7 @@ html, body {
   height: 34vw;
   left: 44vw;
   top: 32vh;
-  background: var(--aurora-3);
+  background: radial-gradient(circle closest-side, var(--aurora-3), transparent 72%);
   animation: drift-c 47s ease-in-out infinite alternate;
 }
 @keyframes drift-a {
@@ -378,11 +382,15 @@ textarea.wb-input, select {
   min-width: 0;
 }
 
-/* every floating panel wears the same clothes */
+/* Every floating panel wears the same clothes.
+ *
+ * Deliberately no backdrop-filter here. What sits behind these panels is
+ * already a smooth gradient, so blurring it again is invisible — but it
+ * makes the browser re-blur five full-size regions on every repaint,
+ * which measured as ten times the cost of typing itself. Frosting is
+ * kept for the overlays below, where the backdrop really is text. */
 .wb-activitybar, .wb-sidebar, .wb-auxbar, .wb-editor-area, .wb-panel {
   background: var(--surface);
-  -webkit-backdrop-filter: var(--frost);
-  backdrop-filter: var(--frost);
   border: 1px solid var(--stroke);
   border-radius: var(--radius-lg);
   box-shadow: var(--lift-2), inset 0 1px 0 var(--stroke);
@@ -435,8 +443,6 @@ textarea.wb-input, select {
   padding: 5px 8px 5px 13px;
   border-radius: 99px;
   background: var(--surface);
-  -webkit-backdrop-filter: var(--frost);
-  backdrop-filter: var(--frost);
   border: 1px solid var(--stroke);
   color: var(--ink-3);
   font-size: var(--text-sm);
@@ -1311,26 +1317,39 @@ textarea.ed-input, textarea.ed-input:focus {
   word-break: break-word;
 }
 
+/* The wrapper is positioned by the glide loop in editor.js — never by a
+   CSS transition, which would restart from zero velocity on every
+   keystroke and read as a stutter. The bar inside owns the blink, so the
+   two never write `transform` over each other. */
 .ed-caret {
   position: absolute;
   top: 0;
   left: 0;
   z-index: 3;
   pointer-events: none;
+  will-change: transform;
+}
+.ed-caret-bar {
+  display: block;
+  width: 100%;
+  height: 100%;
   border-radius: 1px;
   background: var(--accent);
   box-shadow: 0 0 8px -1px var(--accent);
+  transform-origin: 50% 50%;
 }
-.ed-root[data-cursor-style="block"] .ed-caret,
-.ed-root.ed-overwrite .ed-caret { opacity: 0.4; box-shadow: none; }
-.ed-root[data-cursor-blink="blink"] .ed-caret { animation: caret-hard 1.06s step-end infinite; }
-.ed-root[data-cursor-blink="smooth"] .ed-caret { animation: caret-soft 1.15s ease-in-out infinite; }
-.ed-root[data-cursor-blink="expand"] .ed-caret { animation: caret-grow 1.15s ease-in-out infinite; }
+.ed-root[data-cursor-style="block"] .ed-caret-bar,
+.ed-root.ed-overwrite .ed-caret-bar { opacity: 0.4; box-shadow: none; }
+.ed-root[data-cursor-blink="blink"] .ed-caret-bar { animation: caret-hard 1.06s step-end infinite; }
+.ed-root[data-cursor-blink="smooth"] .ed-caret-bar { animation: caret-soft 1.15s ease-in-out infinite; }
+.ed-root[data-cursor-blink="expand"] .ed-caret-bar { animation: caret-grow 1.15s cubic-bezier(0.45, 0, 0.25, 1) infinite; }
+/* blinking under the fingers is noise: hold it solid while typing */
+.ed-root.typing .ed-caret-bar { animation: none; opacity: 1; transform: none; }
 @keyframes caret-hard { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
 @keyframes caret-soft { 0%, 100% { opacity: 1; } 50% { opacity: 0.12; } }
 @keyframes caret-grow {
-  0%, 100% { opacity: 1; scale: 1 1; }
-  50% { opacity: 0.45; scale: 1 0.7; }
+  0%, 100% { transform: scaleY(1); opacity: 1; }
+  50% { transform: scaleY(0.08); opacity: 0.75; }
 }
 
 /* syntax */
@@ -1342,15 +1361,17 @@ textarea.ed-input, textarea.ed-input:focus {
 .tok-directive, .tok-tactic { color: var(--syn-meta); }
 .tok-op { color: var(--syn-punct); }
 
-/* decorations */
+/* decorations — drawn in .ed-decor, behind the text */
 .ed-bracket {
   background: var(--surface-4);
-  border-radius: 2px;
-  box-shadow: inset 0 -1px 0 var(--accent-line);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
 }
-.ed-occurrence { background: var(--accent-wash); border-radius: 3px; }
-.ed-find-match { background: var(--hit); border-radius: 3px; }
-.ed-find-current { background: var(--hit-on); border-radius: 3px; }
+.ed-occurrence { background: var(--accent-wash); }
+.ed-find-match { background: var(--hit); }
+.ed-find-current {
+  background: var(--hit-on);
+  box-shadow: 0 0 0 1px var(--caution);
+}
 .ed-ws { color: var(--ink-3); opacity: 0.45; }
 
 /* find widget */
@@ -1981,3 +2002,238 @@ body.wb-zen .wb-main { padding: 0 6vw 2px; }
   .wb-menubar { overflow-x: auto; scrollbar-width: none; }
   .wb-menubar::-webkit-scrollbar { display: none; }
 }
+
+/* ---- the decoration layer -----------------------------------------
+ * Ranges are drawn as positioned boxes rather than wrapped in spans,
+ * so highlighting an occurrence costs the number of matches instead of
+ * a re-parse of the whole document. Geometry comes from the monospace
+ * cell, which is why soft wrap turns the layer off.
+ * ------------------------------------------------------------------ */
+.ed-decor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 12px 16px;
+  pointer-events: none;
+  will-change: transform;
+  z-index: 0;
+}
+.ed-decor i {
+  position: absolute;
+  display: block;
+  height: calc(var(--ed-font-size) * var(--ed-line-height));
+  border-radius: 3px;
+}
+
+/* ===================================================================
+ * 13. Motion
+ *
+ * Movement is here to explain a change, never to decorate one. A panel
+ * that slides out of the way says where it went; a tab that fades in
+ * says it is new. Everything is transform/opacity so it composites, and
+ * everything is short — 140-220ms, which reads as immediate.
+ *
+ * Nothing animates until the shell has laid itself out once (.wb-ready),
+ * because a workbench that assembles itself on load looks slow rather
+ * than polished.
+ * =================================================================== */
+
+.wb-ready .wb-sidebar,
+.wb-ready .wb-auxbar,
+.wb-ready .wb-panel {
+  transition: width 200ms var(--ease), height 200ms var(--ease),
+              opacity 140ms var(--ease), transform 200ms var(--ease),
+              margin 200ms var(--ease), border-width 200ms var(--ease);
+}
+
+.wb-sidebar.collapsed,
+.wb-auxbar.collapsed {
+  width: 0;
+  min-width: 0;
+  opacity: 0;
+  border-left-width: 0;
+  border-right-width: 0;
+  transform: translateX(-8px);
+  pointer-events: none;
+  overflow: hidden;
+}
+.wb-auxbar.collapsed { transform: translateX(8px); }
+
+.wb-panel.collapsed {
+  height: 0;
+  min-height: 0;
+  opacity: 0;
+  border-top-width: 0;
+  border-bottom-width: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.wb-sash-v.collapsed, .wb-sash-h.collapsed { display: none; }
+
+/* the sidebar's contents settle a beat after the panel itself opens */
+.wb-ready .wb-sidebar:not(.collapsed) .wb-side-view:not(.hidden) {
+  animation: view-in 220ms var(--ease);
+}
+@keyframes view-in {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* switching what the bottom panel shows */
+.wb-ready .wb-panel-view:not(.hidden) { animation: fade-up 160ms var(--ease); }
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* a newly opened editor tab arrives rather than appearing */
+.wb-ready .pane-tab { animation: tab-in 180ms var(--ease); }
+@keyframes tab-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+
+/* press feedback: every control acknowledges the click */
+.wb-act-btn:active, .wb-icon-btn:active, .pane-btn:active,
+.wb-panel-tab:active, .wb-search-opt:active, .wb-sb-seg:active {
+  transform: scale(0.93);
+}
+.wb-btn:active:not(:disabled), .wb-run-btn:active, .wb-run-caret:active {
+  transform: translateY(1px) scale(0.985);
+}
+.wb-act-btn, .wb-icon-btn, .pane-btn, .wb-panel-tab, .wb-search-opt,
+.wb-sb-seg, .wb-btn, .wb-run-btn, .wb-run-caret {
+  transition: transform 90ms var(--ease), background var(--t-fast),
+              color var(--t-fast), border-color var(--t-fast),
+              filter var(--t-fast);
+}
+
+/* the explorer twisty turns instead of swapping glyph */
+.wb-twisty { transition: transform 160ms var(--ease); }
+.wb-file.folder.open > .wb-twisty { transform: rotate(90deg); }
+
+/* a file row lifts very slightly under the pointer */
+.wb-file, .wb-scm-row, .wb-search-row, .wb-outline-item, .wb-prob-row {
+  transition: background var(--t-fast), color var(--t-fast),
+              padding-left 120ms var(--ease);
+}
+.wb-file:hover, .wb-scm-row:hover, .wb-search-row:hover,
+.wb-outline-item:hover, .wb-prob-row:hover { padding-left: 11px; }
+.wb-search-row:hover { padding-left: 21px; }
+.wb-prob-row:hover { padding-left: 25px; }
+
+/* completion list */
+.ed-complete { animation: drop-in 120ms var(--ease); }
+
+/* reduced motion switches all of it off, including the colour field */
+body.wb-reduced-motion .wb-aurora span { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .wb-aurora span { animation: none !important; }
+}
+
+/* ===================================================================
+ * 14. Dependency graph
+ * =================================================================== */
+
+.wb-graph { display: flex; flex-direction: column; overflow: hidden; }
+
+.wb-graph-bar {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  padding: 14px 20px 10px;
+  flex-wrap: wrap;
+}
+.wb-graph-title { display: flex; align-items: baseline; gap: 10px; margin-right: 6px; }
+.wb-graph-file { font-size: var(--text-md); font-weight: 600; }
+.wb-graph-level { font-size: var(--text-sm); color: var(--ink-3); }
+.wb-graph-level.lexical { color: var(--caution); }
+
+.wb-graph-kind {
+  padding: 3px 10px;
+  border: 1px solid var(--stroke);
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+}
+.wb-graph-kind:hover { color: var(--ink); border-color: var(--stroke-2); }
+.wb-graph-kind.active { color: var(--ink); border-color: var(--accent-line); }
+.wb-graph-kind.active.kind-class { background: color-mix(in srgb, var(--syn-type) 18%, transparent); }
+.wb-graph-kind.active.kind-function { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.wb-graph-kind.active.kind-variable { background: color-mix(in srgb, var(--good) 18%, transparent); }
+.wb-graph-kind.active.kind-import { background: color-mix(in srgb, var(--caution) 18%, transparent); }
+.wb-graph-kind.active.kind-module { background: color-mix(in srgb, var(--ink-2) 18%, transparent); }
+
+.wb-graph-canvas { flex: 1; min-height: 0; position: relative; }
+.gr-svg { width: 100%; height: 100%; display: block; }
+
+.gr-edge {
+  stroke: var(--stroke-2);
+  stroke-width: 1.2;
+  transition: stroke var(--t-fast), stroke-width var(--t-fast),
+              opacity var(--t-fast);
+}
+.gr-edge.kind-inherits { stroke-dasharray: 4 3; }
+.gr-arrowhead { fill: var(--stroke-2); }
+.gr-svg.gr-focused .gr-edge { opacity: 0.15; }
+.gr-svg.gr-focused .gr-edge.near {
+  opacity: 1;
+  stroke: var(--accent);
+  stroke-width: 1.9;
+}
+
+.gr-node { cursor: pointer; }
+.gr-dot {
+  fill: var(--surface-4);
+  stroke: var(--ink-3);
+  stroke-width: 1.4;
+  transition: fill var(--t-fast), stroke var(--t-fast), r var(--t-fast);
+}
+.gr-label {
+  fill: var(--ink-2);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-anchor: middle;
+  pointer-events: none;
+  transition: fill var(--t-fast);
+}
+.gr-node.kind-function .gr-dot { fill: color-mix(in srgb, var(--accent) 45%, transparent); stroke: var(--accent); }
+.gr-node.kind-class .gr-dot { fill: color-mix(in srgb, var(--syn-type) 45%, transparent); stroke: var(--syn-type); }
+.gr-node.kind-variable .gr-dot { fill: color-mix(in srgb, var(--good) 42%, transparent); stroke: var(--good); }
+.gr-node.kind-import .gr-dot { fill: color-mix(in srgb, var(--caution) 40%, transparent); stroke: var(--caution); }
+.gr-node.kind-module .gr-dot { fill: var(--surface-4); stroke: var(--ink-2); stroke-dasharray: 3 2; }
+
+.gr-node:hover .gr-dot, .gr-node:focus-visible .gr-dot { stroke-width: 2.4; }
+.gr-node:hover .gr-label, .gr-node:focus-visible .gr-label { fill: var(--ink); }
+.gr-node.pinned .gr-dot { stroke-dasharray: 2 2; }
+.gr-svg.gr-focused .gr-node { opacity: 0.28; }
+.gr-svg.gr-focused .gr-node.near { opacity: 1; }
+.gr-node:focus { outline: none; }
+
+.wb-graph-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  flex: none;
+  padding: 10px 20px 16px;
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+}
+.wb-graph-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.wb-graph-legend-item.dim { color: var(--ink-3); }
+.wb-graph-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--surface-4);
+  border: 1.4px solid var(--ink-3);
+}
+.wb-graph-legend-item.kind-function .wb-graph-swatch { background: var(--accent); border-color: var(--accent); }
+.wb-graph-legend-item.kind-class .wb-graph-swatch { background: var(--syn-type); border-color: var(--syn-type); }
+.wb-graph-legend-item.kind-variable .wb-graph-swatch { background: var(--good); border-color: var(--good); }
+.wb-graph-legend-item.kind-import .wb-graph-swatch { background: var(--caution); border-color: var(--caution); }

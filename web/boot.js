@@ -13,7 +13,7 @@
   const WHEEL = "./epsilon_math-0.1.0-py3-none-any.whl";
   //!BUILD_ID — stamped by scripts/build_web.py from the asset contents,
   // so a fresh page can never pick up a stale cached script
-  const BUILD_ID = "3e8605295467";
+  const BUILD_ID = "9df8d2701799";
   const CACHE_BUST = "?v=" + BUILD_ID;
 
   const realFetch = window.fetch.bind(window);
@@ -109,6 +109,14 @@ for i in range(7):
       PY.globals.set("_pth", body.path || "");
       return jsonResponse(JSON.parse(PY.runPython(
         "import bridge; bridge.complete(_lang, _code, _ln, _col, _pth)")));
+    }
+
+    if (path === "/api/graph") {
+      PY.globals.set("_lang", body.language || "");
+      PY.globals.set("_code", body.code || "");
+      PY.globals.set("_pth", body.path || "");
+      return jsonResponse(JSON.parse(PY.runPython(
+        "import bridge; bridge.symbol_graph(_lang, _code, _pth)")));
     }
 
     if (path === "/api/definition") {
@@ -420,6 +428,7 @@ for i in range(7):
       await ensureScript("./core.js", "EpsilonCore");
       await ensureScript("./editor.js", "EpsilonEditor");
       await ensureScript("./panes.js", "EpsilonPanes");
+      await ensureScript("./graph.js", "EpsilonGraph");
     } catch (err) {
       fail(err);
       return;

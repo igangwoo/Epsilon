@@ -29,12 +29,13 @@ WEB = ROOT / "web"
 SHELL = WEB / "shell"
 
 #: copied verbatim - the browser build shares these byte for byte
-VERBATIM = ("app.js", "app.css", "panes.js", "core.js", "editor.js")
+VERBATIM = ("app.js", "app.css", "panes.js", "core.js", "editor.js",
+            "graph.js")
 
 
 #: assets whose URLs carry the build id, and where each one comes from
 STAMPED_FROM_STATIC = ("app.js", "app.css", "panes.js",
-                       "core.js", "editor.js")
+                       "core.js", "editor.js", "graph.js")
 STAMPED_FROM_WEB = ("vfs.js", "boot.js", "web.css")
 
 _BUILD_ID_LINE = re.compile(r'const BUILD_ID = "[^"]*";')
